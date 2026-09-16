@@ -2,8 +2,9 @@
 
 2026-09-17。目标是通用算法，不是修好某一张原理图。dev.13 安装后的新会话完成 P1
 只读复验，发现 DTR marker 与 C7 GND 可见导线真实相交；dev.14 将可见线宽、marker 自有引线
-豁免及外来导线碰撞统一为共享数据规则，并在原始 P1/P2 输入上离线重算通过。dev.14 尚未
-安装、替换 daemon/Connector 或 Web Apply，仍需下一全新会话完成现场闭环。本记录不是
+豁免及外来导线碰撞统一为共享数据规则，并在未修改的原始 P1/P2 输入上离线重算通过。
+dev.14 安装后的下一全新会话又完成了 P1 的全新规划、Web Apply、原始回读与严格验收，
+并对 P2 做了只读严格回归。该结果只覆盖本轮原理图通用算法与 P1/P2 现场验证，不等于
 v1.5.0 发布验收。
 规范唯一来源为 [Skill 数据驱动架构](../skills/easyeda-agent/references/schematic-data.md)。
 
@@ -289,8 +290,72 @@ Go 格式检查和 `git diff --check` 均无失败。`make local-build VERSION=v
 DIST=dist/local-v1.5.0-dev.14` 已生成五平台 CLI、Connector、Skill 和安装脚本；全部资产
 checksum 通过，Darwin arm64 CLI、包内 Connector 与 Skill 均自报 `v1.5.0-dev.14`。
 
-上述是源码态 dev.14 的离线算法证据。dev.14 尚未安装，未替换 daemon/Connector，
-未 Web Apply，也未做新会话现场回读；这不等于 v1.5.0 发布验收。
+上述是源码态 dev.14 的离线算法证据；它随后由下一节的独立新会话完成运行时与 Web 现场闭环。
+
+## dev.14 新会话 P1 Web 闭环与 P2 回归（2026-09-17）
+
+新会话的第一条 shell 命令为
+`easyeda update --local-dir dist/local-v1.5.0-dev.14 --check --exit-code`，退出 0 并返回
+`READY`。CLI、安装态完整 Skill、daemon 与唯一 Web Connector 均精确为
+`v1.5.0-dev.14`；只使用工程 `475cc0f773ed4a6fb7a02336c8a6a67f` 的现有 Web 标签，
+所有路由使用 project + document UUID，没有固定 window、创建新标签或启动桌面版。
+完整现场证据保存在本地忽略目录 `.easyeda/repair-20260914/live-dev14/`。
+
+写入前从 P1 `fb2fca2fba6d9d07` fresh 回读了完整 identity/pins/bbox/wires/connectivity、
+17 个真实 Designator bbox、纸张、zones 和 groups。只读严格门禁精准得到唯一 blocker：
+
+- `layout-lint --strict` 为 17 个器件、0 overlap、0 pin-coincidence、0 tight、0 off-grid、
+  0 out-of-sheet、0 几何缺测；`check` 的 22 条 finding 全是已由物理线岛和逐 pin 网表
+  证明合法的无接点内部 X，均为 INFO；32 棵物理线树为 0 bridge、0 orphan，官方 DRC
+  fatal/error/warn/info 全 0。
+- `clusters --strict` 唯一报 `U2 ↔ C7`，交叠为 `ovX=1, ovY=11 raw`。成员证据显示
+  U2 的 DTR marker 占位与 C7 的外来 GND 导线真实接触，和 dev.13 反例一致；页面在此时
+  没有 mutation。
+
+从保留的原始三-zone源数据重新开始，而不是把 live 中间态反向当源。源 SHA-256 完整值为
+`a65f2f8d5f8bf3919bb2710647924d323b76445b6c4b0e4d1ff7bec481bf963a`；全新
+`layout-plan --zones` 在 85.39 秒完成，报告为 `status:planned, phase:complete`，算法版本
+`v1.5.0-dev.14`，路由器实际计算 5644 ms。三个 zone 均使用原默认
+`maxExpandedNodes:200000/maxReroutes:4`：POWER_ENTRY 展开 176639 节点、4 次重布、
+共用 182541 个候选；USB_SERIAL 为 0/0/18051；BUCK_3V3 为 16/0/27211；没有失败线岛或
+失败分类。新输出 SHA-256 为
+`ca81241e275fc92d8fe3ec3322f47f9264cf8b0cd2561dd1049cc27b5d643823`，与固定
+offline-dev14 v4 几何逐字节一致；固定渲染 SHA-256 为
+`d602ab63df2a3d628740a616f047756588e125fa3ae54c4f82cc2f35ba58838f`，也逐字节一致。
+
+纸张层生成一页 Z-flow，候选检查 15 次、`budgetLimited:false`；随后用 fresh P1 快照
+生成 `--preserve-instances` 受保护队列。队列 meta 只固定 project/document UUID，共 196 步，
+dry-run 为 `preflight passed`。完整 Apply 一次执行完成：`196 ok, 0 skipped`，墙钟
+52.248 秒，journal 无 timeout、partial 或 unknown；其中实际变更步骤 185 个，包括保留实例
+清图、17 个原实例移动、2 个 NC、127 条 wire、32 个 marker、3 个持久组、3 个 frame/title
+和显式 save。没有续跑 dev.12/dev.13 队列，也没有手改生成队列或现场坐标。
+
+Apply 后又独立 fresh 回读，不以队列内自报代替验收：
+
+- 最终实例守卫与独立对账均为 17/17：全部 primitiveId、uniqueId、库身份、BOM/PCB 标志、
+  供应商、自定义属性及非位号属性逐字段保持；目标位姿、bbox、60 个 pin→net/NC 全部命中。
+  与 canonical 黄金表的 `connectivity-diff` 为空。14 条 attachment 和三个模块的
+  core/peripheral ownership 由 compose 的真实线树硬门通过；现场持久组成员与三组源归属一致。
+- 三个粉色虚线 frame/title 的独立 `frame check` 为 `verified:true, unchanged:3`；17/17
+  Designator 均可见且有真实非空 bbox，器件本体和位号逐项全部在所属框内。型号、参数、描述、
+  供应商等非位号属性只做实例保全，不进入碰撞或入框判据。
+- 独立 `sch gate --strict` 为 `verdict:pass`：layout-lint 全零；17 个 clusters 为 0 overlap、
+  0 out-of-sheet、0 tight；`check` 的 26 条 finding 全是 INFO 级合法内部 X，marker overlap、
+  reversed flag、wire-over-pin、floating pin 均为 0；32 棵物理线树为 0 bridge、0 orphan-stub、
+  0 orphan-flag、0 orphan-tree；官方 DRC fatal/error/warn/info 全 0。
+- 原阻塞几何已经分离：最终 DTR marker 占位 y 为 908..966 raw，C7 GND marker/引线组从
+  y=973.5 raw 起，clusters 不再报交叠。D1.3 回读为 `(175,960)`、官方外向角 180°，其首段
+  到 `(170,960)`，沿左侧外向直出；所有 marker 自有引线方向检查为 0 reversed flag。
+- 最终显式 `sch save` 返回 `saved:true`。官方整页 SVG 为
+  `.easyeda/repair-20260914/live-dev14/p1-official.svg`，163715 bytes，SHA-256
+  `ec77aa773b9e3992ef206623794a07621ddec7a9800e5f6cec85cf09267b7797`；官方 artifact 原件
+  `.easyeda/artifacts/20260917-045425-schematic_export-52b7fd13.svg` 哈希相同。
+
+最后对 P2 `d1e7188c3d1d23c3` 只读运行 dev.14 严格 gate，没有修改页面：14 个 clusters 为
+0 overlap/0 out-of-sheet/0 tight，layout-lint 全零，5 个合法内部 X 仅为 INFO，25 棵物理
+线树为 0 bridge/0 orphan，官方 DRC fatal/error/warn/info 全 0，最终 `verdict:pass`；随后
+将现有 Web 标签切回 P1。至此 dev.14 的 P1/P2 原理图现场闭环通过，但 PCB、完整客户需求
+S0–S6/P0–P10、发布资产与正式 tag/release 等 v1.5.0 发布验收仍未执行。
 
 ## 明确边界
 
