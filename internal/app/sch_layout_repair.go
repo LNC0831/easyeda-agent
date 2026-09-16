@@ -133,17 +133,16 @@ func newSchematicRepairSearch(input SchematicLayoutInput, measured map[string]po
 	if len(routingArg) > 0 {
 		routing = routingArg[0]
 	}
-	// Checkpoint rollback is already bounded by the shared maxCandidates
-	// allowance and the routing budgets. The old 32-per-member/256 cap stopped
-	// dense but still budgeted zones after only a fraction of their declared
-	// candidate allowance, so a bounded failure reported the wrong terminating
-	// resource. Keep a secondary recursion guard, scaled for dense fanout.
-	branchLimit := len(members) * 128
+	// Every checkpoint rollback follows a placement candidate which has already
+	// debited the shared maxCandidates allowance. A smaller, member-count based
+	// branch cap therefore cannot protect an otherwise unbounded search; it only
+	// discards paid-for search capacity on dense zones. Mirror the shared budget
+	// so candidate exhaustion remains the authoritative bound and failure cause.
+	// Keep 128 for tiny synthetic budgets so tests and diagnostics can still
+	// distinguish a candidate stop from the secondary recursion guard.
+	branchLimit := *budget
 	if branchLimit < 128 {
 		branchLimit = 128
-	}
-	if branchLimit > 1024 {
-		branchLimit = 1024
 	}
 	return &schematicRepairSearch{input: input, measured: measured, members: members, hints: hints, budget: budget, initial: *budget, routing: routing, depth: schematicAttachmentDepths(input.CoreComponentID, members, hints),
 		diagnostics: SchematicLayoutSearchDiagnostics{Strategy: "checkpoint-local-repair-v1", BranchLimit: branchLimit, ConflictPasses: 1, MovedComponents: []string{}, CheckpointAlternatives: map[string]int{}}, firstXY: map[string][2]float64{}, focused: true}

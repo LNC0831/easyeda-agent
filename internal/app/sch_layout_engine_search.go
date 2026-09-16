@@ -303,21 +303,33 @@ func libNameIslands(p *powerLayoutPlan, policies map[string]string, budget ...*i
 	base := *p
 	base.Flags = nil
 	var lastErr error
-	for order := 0; order < 3; order++ {
+	for order := 0; order < 5; order++ {
 		trial := base
 		islands := libIslands(&trial)
 		sort.SliceStable(islands, func(i, j int) bool {
-			if order == 0 {
-				return libNetPriority(policies[islands[i].net]) < libNetPriority(policies[islands[j].net])
-			}
 			a, b := islands[i].pins[0], islands[j].pins[0]
-			if a.Y != b.Y {
-				if order == 1 {
-					return a.Y > b.Y
+			switch order {
+			case 0:
+				return libNetPriority(policies[islands[i].net]) < libNetPriority(policies[islands[j].net])
+			case 1, 2:
+				if a.Y != b.Y {
+					if order == 1 {
+						return a.Y > b.Y
+					}
+					return a.Y < b.Y
 				}
-				return a.Y < b.Y
+				return a.X < b.X
+			case 3:
+				if a.X != b.X {
+					return a.X < b.X
+				}
+				return a.Y > b.Y
+			default:
+				if islands[i].net != islands[j].net {
+					return islands[i].net < islands[j].net
+				}
+				return islands[i].key < islands[j].key
 			}
-			return a.X < b.X
 		})
 		if lastErr = libNameOrderedIslands(&trial, policies, islands, budget...); lastErr == nil {
 			*p = trial

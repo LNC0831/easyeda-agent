@@ -43,7 +43,7 @@ func TestFeasibilityTriesCoordinatedAllowedPoseWithinOriginalBudget(t *testing.T
 			t.Fatal("core moved or rotated")
 		}
 		if calls == 1 {
-			if *quota != 50000 {
+			if *quota != 75000 {
 				t.Fatalf("source pose consumed fallback reservation: %d", *quota)
 			}
 			*quota = 0
@@ -57,7 +57,7 @@ func TestFeasibilityTriesCoordinatedAllowedPoseWithinOriginalBudget(t *testing.T
 		*quota -= 7
 		return &SchematicLayoutResult{}, nil
 	})
-	if err != nil || out == nil || calls != 2 || budget != 49993 || report.CandidatesUsed != 50007 || report.StopReason != "allowed-pose-feasible" || len(report.SelectedRotations) != 2 {
+	if err != nil || out == nil || calls != 2 || budget != 24993 || report.CandidatesUsed != 75007 || report.StopReason != "allowed-pose-feasible" || len(report.SelectedRotations) != 2 {
 		t.Fatalf("bad feasibility accounting/result: out=%v report=%+v budget=%d err=%v", out, report, budget, err)
 	}
 	after, _ := json.Marshal([]any{in, measured})

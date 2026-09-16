@@ -1,10 +1,10 @@
-# 原理图通用算法验证 — v1.5.0-dev.13
+# 原理图通用算法验证 — v1.5.0-dev.14
 
-2026-09-17。目标是通用算法，不是修好某一张原理图。离线原始 P1/P2 已通过。
-dev.11 安装后的新会话完成 P2 只读复验；dev.12 完成 P1 新鲜求解与受保护 Apply，
-但在最终布局门因两条检查器假警停止，未进入最终显式保存。dev.13 将同页显式 ownership
-统一到 `layout-lint` 与 `clusters`，并按官方 flat segments 逐段检查 owned wire；离线回归已通过，
-仍需安装 dev.13 后由新会话现场重放 P1。本记录不是 v1.5.0 发布验收。
+2026-09-17。目标是通用算法，不是修好某一张原理图。dev.13 安装后的新会话完成 P1
+只读复验，发现 DTR marker 与 C7 GND 可见导线真实相交；dev.14 将可见线宽、marker 自有引线
+豁免及外来导线碰撞统一为共享数据规则，并在原始 P1/P2 输入上离线重算通过。dev.14 尚未
+安装、替换 daemon/Connector 或 Web Apply，仍需下一全新会话完成现场闭环。本记录不是
+v1.5.0 发布验收。
 规范唯一来源为 [Skill 数据驱动架构](../skills/easyeda-agent/references/schematic-data.md)。
 
 ## 已实现的通用契约
@@ -241,9 +241,60 @@ checksum、同版 Connector/Skill 及本机 CLI 版本检查通过。这仍是�
 触发，也不能替代该证据。dev.13 在本节记载时尚未安装，也尚未重跑 P1，不能把检查器修复
 写成现场门禁已经通过。
 
+## dev.13 新会话只读复验与 dev.14 可见线宽修复（2026-09-17）
+
+dev.13 安装后的全新会话通过本地版本门禁。本轮从现场 P1 新鲜回读 17 个器件、
+60 条 canonical connection 和 3 个 persistent group；只读证据保存在
+`.easyeda/repair-20260914/live-dev13/`，没有任何页面变更。
+
+- `layout-lint --strict` 的所有几何计数为 0，证明 dev.13 的同归属 tight 和 L 形空角
+  修复生效；`check` 通过，22 处合法内部 X 仅为 INFO；`bridge-check` 为 32 棵物理线树、
+  0 bridge、0 orphan；官方 DRC fatal/error/warn/info 均为 0。
+- `clusters` 仍精确拒绝 `U2 ↔ C7`。DTR marker 图元 `b5f2a402e19341e4`的锚点为
+  `(820,1045)`，渲染 bbox 为 `(829.5,1039.5)..(860.5,1050.5)`；C7 GND 导线
+  `3fead4de4cc179dc` 含 `(830,1040)→(830,1050)→(820,1050)→(820,1055)`。
+  可见线宽真实相交，且网络分别是 DTR/GND；这不是 L 形包络空角误报。
+
+dev.14 把这个反例固化成通用数据规则：线段可见半宽统一为 0.5 raw，cluster 与
+组合器最终 marker 门共用同一线段 bbox 语义。marker 本体/文字与外来导线的正面积
+交叠全部拒绝；只有“同一 marker 索引、恰好两点、恰好从其 `PinX/PinY` 到自身锚点”的
+生成引线可在该锚点局部豁免。不按同网、同区或距离放宽，也不缩小 marker bbox。
+四向自有引线正例、异物主导线沿 marker 边线走的负例和 P1 `C7-GND ↔ DTR` 最小反例
+均已纳入 Go 回归。旧 dev.12 P1 输出在新规则下会先拒绝
+`CC2 [-60,85]→[-65,85] crosses GND body/text`，证明必须整区重算。
+
+重算又暴露两个有界调度问题，本轮未改原始输入、未提高每区 200000 候选，也未放宽碰撞：
+
+- checkpoint 每次回退已消耗一个候选，旧成员数派生的 1024 分支上限却会在预算未用完时
+  提前截断。现分支上限与该次共享候选额度一致，小预算仍保留 128 的次级递归守卫。
+- 有 `allowedRotations` 时，旧调度对唯一有新鲜实测证据的源姿态只分配一半预算。
+  诊断重放证明源姿态在原 200000 总额度内可用 125263 候选求解，并非几何无解。
+  现大预算下源姿态先用 3/4（上限 150000），其余仍留给显式许可旋转；旧 20000
+  默认窗口和未用配额归还语义保留。
+
+最终使用未改的原始 P1 三 zone 输入（SHA-256 `a65f2f8d5f8bf3919bb2710647924d323b76445b6c4b0e4d1ff7bec481bf963a`）
+离线重放通过，墙钟 88.51 秒。POWER_ENTRY 在源姿态用 123481/150000 候选找到完整解，
+含变体评估该区共用 182541；USB_SERIAL/BUCK_3V3 分别为 18051/27211，三区合计 227803。
+输出 `p1-zones-v4.json` SHA-256 为 `ca81241e275fc92d8fe3ec3322f47f9264cf8b0cd2561dd1049cc27b5d643823`，
+固定渲染通过。USB_SERIAL 的 DTR 从真实线树 `(50,0)` 向下 45 raw 命名，C7 GND 从引脚向下
+10 raw，现场反例对应的几何已分离。
+
+未改的原始 P2 五 zone 输入（SHA-256 `1ce722364aa9a32ef172f90c4770a3aa87f7ac60f8b4fe278e8cf11b76a01391`）
+也离线重放通过，墙钟 8.48 秒；输出 SHA-256 为
+`67487deb3987df29e6cb3785709ee6c881f0fdbe8fa552c65ee2a4eceb0d568f`，固定渲染通过。
+
+dev.14 最终离线门禁通过：`go test ./... -count=1`、Connector 331/331、
+`npm run typecheck`、`make lint-test blocks-audit modules-audit skill-check release-script-test`、
+Go 格式检查和 `git diff --check` 均无失败。`make local-build VERSION=v1.5.0-dev.14
+DIST=dist/local-v1.5.0-dev.14` 已生成五平台 CLI、Connector、Skill 和安装脚本；全部资产
+checksum 通过，Darwin arm64 CLI、包内 Connector 与 Skill 均自报 `v1.5.0-dev.14`。
+
+上述是源码态 dev.14 的离线算法证据。dev.14 尚未安装，未替换 daemon/Connector，
+未 Web Apply，也未做新会话现场回读；这不等于 v1.5.0 发布验收。
+
 ## 明确边界
 
 有界窗口、姿态菜单与预算不是完备搜索；仍可能重复探索局部预算窗口。失败不证明全局无解，
 不能靠扩大预算、放松硬约束或手改最终坐标宣称解决。外围语义归属仍需显式输入。
 宿主接触语义现场证据限于已测 EasyEDA Pro 3.2.186；未知宿主行为须完整回读，不推定兼容。
-离线实例保全/回读守卫测试不等于 dev.13 运行时现场验收；PCB 与正式发布均不在本轮执行范围。
+离线实例保全/回读守卫测试不等于 dev.14 运行时现场验收；PCB 与正式发布均不在本轮执行范围。

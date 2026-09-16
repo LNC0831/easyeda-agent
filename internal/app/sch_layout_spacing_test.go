@@ -31,8 +31,13 @@ func TestUnifiedZoneSpacingPreservesCircuitAndPropagates(t *testing.T) {
 		t.Fatal("spacing was not forwarded to the render/sheet input")
 	}
 	for i, z := range planned.Zones {
-		// Enough budget in this fixture makes the old and isolated runs equal.
-		if !reflect.DeepEqual(z.Layout, legacy.Zones[i].Layout) {
+		// Enough budget in this fixture makes the old and isolated circuit
+		// results equal. Search diagnostics are deliberately budget-local: the
+		// legacy second zone sees the shared remainder while unified spacing gives
+		// every zone the full isolated allowance.
+		got, want := *z.Layout, *legacy.Zones[i].Layout
+		got.Search, want.Search = nil, nil
+		if !reflect.DeepEqual(got, want) {
 			t.Fatal("presentation spacing changed electrical geometry")
 		}
 		p := powerLayoutPlan{Placements: z.Layout.Placements, Wires: z.Layout.Wires, Flags: z.Layout.Flags}

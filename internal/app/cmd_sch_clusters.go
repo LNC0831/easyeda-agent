@@ -58,7 +58,7 @@ type schClusterTyped struct {
 // Model a schematic centreline with a 1-raw topological stroke for positive-area
 // member collision checks; the cluster's aggregate Box still uses the exact
 // polyline envelope for page occupancy.
-const schClusterWireHalfWidth = 0.5
+const schVisibleWireHalfWidth = 0.5
 
 // schClusterFinding 是一条判定结果。
 type schClusterFinding struct {
@@ -207,7 +207,7 @@ func buildSchClusters(comps []layoutComp, wires []schGroupWire) ([]schCluster, i
 		// dev.12 U2↔C7 false overlap. Box below remains the union envelope for
 		// cluster occupancy/page bounds; Members receives each real segment.
 		for _, seg := range schDesignatorWireSegments(w) {
-			b, ok := schClusterWireSegmentBBox(seg)
+			b, ok := schVisibleWireSegmentBBox(seg)
 			if !ok {
 				continue
 			}
@@ -332,20 +332,21 @@ func buildSchClusters(comps []layoutComp, wires []schGroupWire) ([]schCluster, i
 	return out, unowned
 }
 
-// schClusterWireSegmentBBox turns one real orthogonal wire segment into a
+// schVisibleWireSegmentBBox turns one real orthogonal wire segment into a
 // positive-area member box. The epsilon is only a topological stroke: it lets a
 // centreline that enters another body count as an intersection without turning
-// the empty corner of a multi-segment polyline into occupied area.
-func schClusterWireSegmentBBox(seg [4]float64) (layoutBBox, bool) {
+// the empty corner of a multi-segment polyline into occupied area. Planner and
+// live cluster validation share this visible-stroke model.
+func schVisibleWireSegmentBBox(seg [4]float64) (layoutBBox, bool) {
 	x0, y0, x1, y1 := seg[0], seg[1], seg[2], seg[3]
 	if math.Hypot(x1-x0, y1-y0) <= acOverlapEps {
 		return layoutBBox{}, false
 	}
 	return layoutBBox{
-		MinX: math.Min(x0, x1) - schClusterWireHalfWidth,
-		MinY: math.Min(y0, y1) - schClusterWireHalfWidth,
-		MaxX: math.Max(x0, x1) + schClusterWireHalfWidth,
-		MaxY: math.Max(y0, y1) + schClusterWireHalfWidth,
+		MinX: math.Min(x0, x1) - schVisibleWireHalfWidth,
+		MinY: math.Min(y0, y1) - schVisibleWireHalfWidth,
+		MaxX: math.Max(x0, x1) + schVisibleWireHalfWidth,
+		MaxY: math.Max(y0, y1) + schVisibleWireHalfWidth,
 	}, true
 }
 
@@ -396,7 +397,7 @@ func judgeSchClustersWith(cs []schCluster, usable *layoutBBox, minGap float64, s
 			gap := math.Inf(1)
 			ea, eb := cs[i].Box, cs[j].Box
 			envelopeGap := boxGapAlongAxes(ea, eb)
-			if envelopeGap < minGap || envelopeGap <= schClusterWireHalfWidth || boxesIntersect(ea, eb) {
+			if envelopeGap < minGap || envelopeGap <= schVisibleWireHalfWidth || boxesIntersect(ea, eb) {
 				for _, a := range membersOf(cs[i]) {
 					for _, b := range membersOf(cs[j]) {
 						x := math.Min(a.MaxX, b.MaxX) - math.Max(a.MinX, b.MinX)

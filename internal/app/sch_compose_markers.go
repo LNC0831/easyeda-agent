@@ -47,32 +47,55 @@ func compositionMarkerGeometry(p *powerLayoutPlan) ([]layoutBBox, error) {
 // Check actual segments, not the envelope of a bent wire. Electrical topology
 // can be correct even when a wire runs through another marker's body or name.
 func compositionWireMarkerGeometry(p *powerLayoutPlan, comps []layoutComp) error {
-	wires := append([]powerLayoutWire(nil), p.Wires...)
-	for _, f := range p.Flags {
-		x, y := endpointFor(f.PinX, f.PinY, f.Offset, f.Direction)
-		wires = append(wires, powerLayoutWire{Net: f.Net, Points: [][2]float64{{f.PinX, f.PinY}, {x, y}}})
+	type ownedWire struct {
+		wire        powerLayoutWire
+		markerIndex int
 	}
+	wires := make([]ownedWire, 0, len(p.Wires)+len(p.Flags))
+	for _, wire := range p.Wires {
+		wires = append(wires, ownedWire{wire: wire, markerIndex: -1})
+	}
+	for i, f := range p.Flags {
+		x, y := endpointFor(f.PinX, f.PinY, f.Offset, f.Direction)
+		wires = append(wires, ownedWire{
+			wire:        powerLayoutWire{Net: f.Net, Points: [][2]float64{{f.PinX, f.PinY}, {x, y}}},
+			markerIndex: i,
+		})
+	}
+	markers := make([]layoutComp, 0, len(p.Flags))
 	for _, c := range comps {
+		if isSchMarker(c.ComponentType) {
+			markers = append(markers, c)
+		}
+	}
+	if len(markers) != len(p.Flags) {
+		return fmt.Errorf("wire-marker geometry has %d markers for %d flags", len(markers), len(p.Flags))
+	}
+	for markerIndex, c := range markers {
 		if !isSchMarker(c.ComponentType) || c.BBox == nil {
 			continue
 		}
-		// The measured body includes a half-unit stroke halo. Removing that
-		// halo allows a normal lead to terminate at the marker's anchor.
-		body := *c.BBox
-		body.MinX += 0.5
-		body.MinY += 0.5
-		body.MaxX -= 0.5
-		body.MaxY -= 0.5
-		boxes := []layoutBBox{body}
-		if band := flagTextBand(c); band != nil {
-			boxes = append(boxes, *band)
-		}
-		for _, w := range wires {
+		box := markerJudgeBBox(c)
+		flag := p.Flags[markerIndex]
+		anchor := [2]float64{c.X, c.Y}
+		for _, owned := range wires {
+			w := owned.wire
 			for i := 1; i < len(w.Points); i++ {
-				for _, box := range boxes {
-					if plSegmentBox(w.Points[i-1], w.Points[i], box) {
-						return fmt.Errorf("wire-marker overlap: wire %s %v→%v crosses %s body/text", w.Net, w.Points[i-1], w.Points[i], c.Net)
-					}
+				a, b := w.Points[i-1], w.Points[i]
+				// Only this marker's generated lead may terminate on its own anchor.
+				// The exemption is by object identity plus exact geometry: a same-net
+				// or same-owner wire with coincident coordinates is still foreign.
+				if owned.markerIndex == markerIndex && i == 1 && len(w.Points) == 2 &&
+					((a == [2]float64{flag.PinX, flag.PinY} && b == anchor) ||
+						(b == [2]float64{flag.PinX, flag.PinY} && a == anchor)) {
+					continue
+				}
+				if plOnSegment(anchor, a, b) {
+					return fmt.Errorf("wire-marker overlap: foreign wire %s %v→%v touches %s anchor", w.Net, a, b, c.Net)
+				}
+				segment, ok := schVisibleWireSegmentBBox([4]float64{a[0], a[1], b[0], b[1]})
+				if ok && boxesIntersect(segment, box) {
+					return fmt.Errorf("wire-marker overlap: wire %s %v→%v crosses %s body/text", w.Net, a, b, c.Net)
 				}
 			}
 		}

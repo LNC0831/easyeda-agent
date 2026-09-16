@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.5.0-dev.14] — 2026-09-17 (local development only; fresh-session live validation required)
+
+- Treat schematic wire geometry as a visible 1-raw stroke consistently in cluster and final marker validation. Reject foreign wire contact with marker body/text; exempt only the exact generated lead of that marker at its own anchor, by marker identity and exact two-point geometry.
+- Expand deterministic island naming order retries without weakening geometry. Align checkpoint rollback with the already shared candidate allowance, and prioritize the fresh measured pose with a bounded 3/4 allocation (150,000 maximum) while preserving budget for explicitly allowed rotations.
+- Replay the unchanged retained P1 and P2 sources successfully under their original per-zone 200,000-candidate limits, including a legal DTR/C7-GND separation. These are offline source results; dev.14 is not installed or Web-applied, and this is not v1.5.0 release acceptance.
+
 ## [1.5.0-dev.13] — 2026-09-17 (local development only; fresh-session live validation required)
 
 - Share one page-scoped explicit ownership predicate between schematic layout-lint and cluster validation. Tight spacing inside the same declared module/zone or persistent functional group is allowed, while positive-area overlap, cross-owner tight spacing, missing ownership and conflicting geometry remain blocking.

@@ -114,9 +114,11 @@ func schematicFeasibilityPoses(input SchematicLayoutInput, allowed map[string][]
 
 // Preserve the original default 20k candidate window (or the whole smaller
 // allowance) before reserving budget for poses. A known feasible small-budget
-// source must not be lost merely because optional fallback was introduced. For
-// larger budgets source receives at least half; each fallback receives a fair
-// share of the same remaining allowance. Unspent quota returns, never resets.
+// source must not be lost merely because optional fallback was introduced. The
+// measured source pose is the only pose backed by fresh page evidence, so give
+// it three quarters of a larger allowance (capped at 150k) before exploring
+// optional rotations. Each fallback still receives a fair share of the same
+// remaining allowance. Unspent quota returns, never resets.
 func runSchematicLayoutFeasibility(input SchematicLayoutInput, measured map[string]powerLayoutPlacement, allowed map[string][]float64, budget *int,
 	run func(map[string]powerLayoutPlacement, *int) (*SchematicLayoutResult, error),
 ) (*SchematicLayoutResult, *SchematicFeasibilityReport, error) {
@@ -135,9 +137,15 @@ func runSchematicLayoutFeasibility(input SchematicLayoutInput, measured map[stri
 		}
 		quota := *budget / (len(proposals) - index)
 		if index == 0 {
-			quota = *budget / 2
+			quota = *budget * 3 / 4
+			if *budget <= 40000 {
+				quota = 20000
+			}
 			if quota < 20000 {
 				quota = 20000
+			}
+			if quota > 150000 {
+				quota = 150000
 			}
 			if quota > *budget {
 				quota = *budget

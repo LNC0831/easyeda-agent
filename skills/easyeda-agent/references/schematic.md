@@ -115,6 +115,8 @@ easyeda sch sheet-geometry --project <project> --doc <page-uuid> --json
   但同组真实 overlap 和跨组 tight 仍阻断；缺 ownership 时不得按同网或距离猜测豁免。
   `clusters` 对 owned wire 逐官方 flat segment 判成员相交，整条折线包络仅用于总体占地和
   页面边界，不能把 L 形空角算作碰撞。
+  导线与 marker 本体/文字按可见 stroke 判碰撞；foreign wire 沿边、端点或 T 接不能因
+  marker bbox 被统一内缩而漏检。只允许 marker 自身 lead 在自身 anchor 的精确收口。
 - `sch check --json` 的逐条问题在 `result.findings`。SDK DRC 可能只返回布尔/聚合值，
   不能单凭它宣称官方 UI 所有警告已清除；跳过的 gate 阶段仍需补验。
 - 用 `sch export-image` 导整页或指定 `--ids`；这是文档渲染，不依赖前台视口刷新。

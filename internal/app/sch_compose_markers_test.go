@@ -42,7 +42,7 @@ func TestComposeWireMarkerInteriors(t *testing.T) {
 		{"cross body", [][2]float64{{body.MinX + 5, -20}, {body.MinX + 5, 20}}, true},
 		{"cross external text", [][2]float64{{body.MinX - 5, -20}, {body.MinX - 5, 20}}, true},
 		{"bent wire envelope only", [][2]float64{{0, -20}, {120, -20}, {120, 20}}, false},
-		{"normal anchor lead", [][2]float64{{110, 0}, {90, 0}}, false},
+		{"foreign wire ending at anchor", [][2]float64{{110, 0}, {90, 0}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &powerLayoutPlan{Flags: []powerLayoutFlag{marker}, Wires: []powerLayoutWire{{Net: "RXD", Points: tc.points}}}
@@ -54,6 +54,37 @@ func TestComposeWireMarkerInteriors(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestComposeRejectsForeignWireAlongMarkerStroke(t *testing.T) {
+	// Reduced from the live C7 GND stub beside the DTR port. The wire centreline
+	// lies on the marker edge, so centreline-vs-shrunk-box misses it; the visible
+	// 0.5-raw strokes have positive-area overlap and must fail.
+	p := &powerLayoutPlan{
+		Flags: []powerLayoutFlag{{
+			Net: "DTR", Kind: "net_port_bi", PinX: 50, PinY: -15,
+			Direction: "right", Offset: 15,
+		}},
+		Wires: []powerLayoutWire{{
+			Net:    "GND",
+			Points: [][2]float64{{65, -10}, {75, -10}, {75, -20}},
+		}},
+	}
+	if _, err := compositionMarkerGeometry(p); err == nil || !strings.Contains(err.Error(), "wire-marker overlap") {
+		t.Fatalf("foreign edge-collinear wire escaped visible-stroke gate: %v", err)
+	}
+}
+
+func TestComposeOwnMarkerLeadMayTerminateAtItsAnchor(t *testing.T) {
+	for _, direction := range []string{"left", "right", "up", "down"} {
+		p := &powerLayoutPlan{Flags: []powerLayoutFlag{{
+			Net: "DTR", Kind: "net_port_bi", PinX: 0, PinY: 0,
+			Direction: direction, Offset: 20,
+		}}}
+		if _, err := compositionMarkerGeometry(p); err != nil {
+			t.Fatalf("own %s lead must be allowed to terminate at its exact anchor: %v", direction, err)
+		}
 	}
 }
 

@@ -89,6 +89,26 @@ func TestSchematicRepairMovesPreviouslyPlacedPeripheral(t *testing.T) {
 	}
 }
 
+func TestRepairBranchLimitUsesSharedCandidateAllowance(t *testing.T) {
+	in := schematicRepairFixture()
+	measured := map[string]powerLayoutPlacement{}
+	members := make([]string, 0, len(in.Components))
+	for _, component := range in.Components {
+		measured[component.ID] = component.Measurement
+		members = append(members, component.ID)
+	}
+	budget := 4096
+	search := newSchematicRepairSearch(in, measured, members, nil, &budget)
+	if search.diagnostics.BranchLimit != budget {
+		t.Fatalf("branch cap discarded shared search capacity: got %d want %d", search.diagnostics.BranchLimit, budget)
+	}
+	budget = 7
+	search = newSchematicRepairSearch(in, measured, members, nil, &budget)
+	if search.diagnostics.BranchLimit != 128 {
+		t.Fatalf("tiny-budget secondary guard changed: got %d want 128", search.diagnostics.BranchLimit)
+	}
+}
+
 func TestRouteConflictIncludesWireOwnersAndKeepsUnknownOwnersSearchable(t *testing.T) {
 	a := powerLayoutPlacement{Designator: "A", BBox: layoutBBox{-120, -20, -80, 20}, Pins: []powerLayoutPin{{Number: "1", Net: "N", X: -70, Y: 0, Rotation: directionNumber(0)}}}
 	b := powerLayoutPlacement{Designator: "B", BBox: layoutBBox{80, -20, 120, 20}, Pins: []powerLayoutPin{{Number: "1", Net: "N", X: 70, Y: 0}}}

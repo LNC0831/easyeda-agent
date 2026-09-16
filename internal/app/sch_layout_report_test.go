@@ -188,12 +188,9 @@ func TestLayoutReportRealPlacementAndRouteConflicts(t *testing.T) {
 	if search["candidatesUsed"] != float64(in.MaxCandidates) || search["remainingCandidates"] != float64(0) || search["globalInfeasibilityProven"] != false {
 		t.Fatalf("lost actual search accounting: %s", raw)
 	}
-	wantBranchLimit := len(in.Components) * 128
+	wantBranchLimit := in.MaxCandidates
 	if wantBranchLimit < 128 {
 		wantBranchLimit = 128
-	}
-	if wantBranchLimit > 1024 {
-		wantBranchLimit = 1024
 	}
 	if search["search"].(map[string]any)["branchLimit"] != float64(wantBranchLimit) {
 		t.Fatalf("lost bounded branch contract: %s", raw)
