@@ -7,6 +7,10 @@
 
 ## Pin-aware autoconnect — let the planner pick direction/offset
 
+从 1.5.0-dev.3 起，写线/接标记的 daemon 执行路径另有不可选的引脚方向与穿本体硬门，
+自动写前检查及写后回读，不因省略 `--strict` 而关闭。以下候选评分负责寻找合法形态，
+不能替代或绕过执行门。已有连通不证明布局合法；详见 schematic.md 的强制执行检查。
+
 `connect_pin` (`sch connect`) keeps the connection **safe** (pin → short wire →
 flag/netport, never a netflag on a bare pin), but it still makes YOU pick
 `--direction` and `--offset`, so layout quality depends on judgment. **`sch
@@ -89,11 +93,10 @@ connect_pin 里 57 次失败,其中 23 次是 netflag 卡在「请求被丢掉�
 已对齐**,此前它还吃 20s 默认值,慢速成功被报成失败):连接器内部最坏路径
 (wire 7s + 重试 0.25s + wire 重试 7s + netflag 7s = 21.25s)本来就超过 20s,
 默认预算会让 daemon 先于连接器放弃 —— 报「connector did not respond」而对方其实
-已经把线和旗建完了(实测 57 次失败里 17 次是这么来的)。**`sch connect` 现在对
-超时/DISPATCH_FAILED 自动做一次轻读复核**:回读确认 pin 已在目标网,就按
-`slowLanded` 成功返回并在 stderr 警告勿重试 —— 「connector did not respond 后
-禁止盲重试」不再需要你人工执行,**按命令输出判断即可**;真失败(复核也没看到
-落地)照旧非零退出,那时仍以 `sch check` 兜底。
+已经把线和旗建完了(实测 57 次失败里 17 次是这么来的)。**`sch connect` 失败必须
+非零退出**；不能仅因回读 pin 已在目标网就报告 `slowLanded` 成功，因为修复前
+就可能已经同网但几何错误。明确的几何门拒绝保留原始错误；超时等未知结果须回读
+导线、标记及方向后核实，不盲重试。这项错误处理修正尚须随下一开发包部署。
 
 ```bash
 # single pin by designator:pin (number OR name)

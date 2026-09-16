@@ -24,6 +24,8 @@ type SchematicZonesInput struct {
 	MaxCandidates int                          `json:"maxCandidates,omitempty"`
 	Zones         []SchematicZone              `json:"zones"`
 	Optimization  *SchematicLayoutOptimization `json:"optimization,omitempty"`
+	Routing       *SchematicRoutingOptions     `json:"routing,omitempty"`
+	MarkerAnchors []SchematicMarkerAnchor      `json:"markerAnchors,omitempty"`
 }
 type SchematicZoneVariant struct {
 	ID            string                 `json:"id"`
@@ -138,7 +140,7 @@ func PlanSchematicZones(in SchematicZonesInput) (*SchematicZonesResult, error) {
 		out.Spacing = &spacing
 	}
 	for _, z := range in.Zones {
-		local := SchematicLayoutInput{SchemaVersion: 1, CoreComponentID: z.CoreComponentID, NetPolicies: map[string]string{}, Optimization: in.Optimization}
+		local := SchematicLayoutInput{SchemaVersion: 1, CoreComponentID: z.CoreComponentID, NetPolicies: map[string]string{}, Optimization: in.Optimization, Routing: in.Routing}
 		for _, id := range z.ComponentIDs {
 			c := components[id]
 			local.Components = append(local.Components, c)
@@ -153,6 +155,11 @@ func PlanSchematicZones(in SchematicZonesInput) (*SchematicZonesResult, error) {
 				local.Attachments = append(local.Attachments, h)
 			}
 		}
+		for _, anchor := range in.MarkerAnchors {
+			if anchor.Type == "pin" && owners[anchor.ComponentID] == z.ID || anchor.Type == "wire_tree" && anchor.ZoneID == z.ID {
+				local.MarkerAnchors = append(local.MarkerAnchors, anchor)
+			}
+		}
 		zoneBudget := &budget
 		if in.Spacing != nil || in.Optimization != nil {
 			// Unified two-level mode is isolated: a harder earlier zone cannot
@@ -165,6 +172,7 @@ func PlanSchematicZones(in SchematicZonesInput) (*SchematicZonesResult, error) {
 		if err != nil {
 			return nil, fmt.Errorf("zone %s (%s): %w", z.ID, z.Title, err)
 		}
+		setSchematicMarkerAnchorZone(layout, z.ID)
 		out.CandidatesUsed += before - *zoneBudget
 		main, err := measureSchematicZoneVariant(z, "", layout, in.Spacing)
 		if err != nil {

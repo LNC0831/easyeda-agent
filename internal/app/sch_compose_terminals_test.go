@@ -154,8 +154,9 @@ func TestComposeTerminalsNoStraightSolution(t *testing.T) {
 		{"body", func(p *powerLayoutPlan) {
 			p.Placements = append(p.Placements, powerLayoutPlacement{Designator: "J1", BBox: layoutBBox{-70, -10, -55, 10}})
 		}},
-		{"foreign wire", func(p *powerLayoutPlan) {
-			p.Wires = []powerLayoutWire{{Net: "B", Points: [][2]float64{{-55, -10}, {-55, 10}}}}
+		{"foreign wire endpoint", func(p *powerLayoutPlan) {
+			// A T contact blocks; a bare interior X is not an electrical short.
+			p.Wires = []powerLayoutWire{{Net: "B", Points: [][2]float64{{-55, 0}, {-55, 10}}}}
 		}},
 		{"foreign pin", func(p *powerLayoutPlan) {
 			p.Placements[0].Pins = append(p.Placements[0].Pins, powerLayoutPin{Number: "2", Net: "B", X: -55, Y: 0})

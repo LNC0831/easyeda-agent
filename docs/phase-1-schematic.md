@@ -1,5 +1,10 @@
 # Phase 1: Schematic Automation
 
+> Historical Phase 1 scope, not the current workflow or confirmation policy.
+> 现行原理图统一遵守 [数据驱动架构基准](../skills/easyeda-agent/references/schematic-data.md#数据驱动架构基准)。
+> 本文的旧命令、截图验收和每次保存再确认仅保留历史背景，不用于指导当前操作。
+> 当前命令看 CLI help；检查点显式保存沿用任务授权，新增破坏性范围另行确认。
+
 Phase 1 makes schematic work reliable enough for an AI agent to inspect, modify, verify, and export a schematic through EasyEDA.
 
 ## Goals

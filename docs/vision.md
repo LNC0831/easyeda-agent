@@ -5,6 +5,8 @@
 ```text
 user goal
   -> Skill workflow
+  -> source design data / constraints
+  -> pure computation / data validation
   -> Go CLI/daemon typed actions
   -> EasyEDA connector plugin
   -> official eda API
@@ -29,8 +31,10 @@ The goal is not to replace EasyEDA. The goal is to make EasyEDA controllable thr
 5. Put expert judgment in Skills.
    Skill instructions should constrain workflow, confirmation points, verification, and repair strategy.
 
-6. Prefer small closed loops.
-   After mutation, verify through readback, DRC, snapshot, or selection inspection before continuing.
+6. Prefer data-driven closed loops.
+   Preserve raw observations, revise source design data, compute and validate, then apply and read back.
+   Screenshots aid review but never replace missing machine evidence. Follow the
+   [schematic architecture baseline](../skills/easyeda-agent/references/schematic-data.md#数据驱动架构基准).
 
 ## Non-goals
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/zhoushoujianwork/easyeda-agent/internal/schguard"
 )
 
 // power-layout is intentionally an offline, narrowly scoped planner. Its input
@@ -25,11 +26,12 @@ type powerLayoutOptions struct {
 }
 
 type powerLayoutPin struct {
-	Number string  `json:"number"`
-	Name   string  `json:"name"`
-	Net    string  `json:"net"`
-	X      float64 `json:"x"`
-	Y      float64 `json:"y"`
+	Number   string   `json:"number"`
+	Name     string   `json:"name"`
+	Net      string   `json:"net"`
+	X        float64  `json:"x"`
+	Y        float64  `json:"y"`
+	Rotation *float64 `json:"rotation,omitempty"` // official WORLD outward angle; nil = legacy unique-bbox inference
 }
 
 type powerLayoutPlacement struct {
@@ -51,12 +53,13 @@ type powerLayoutWire struct {
 }
 
 type powerLayoutFlag struct {
-	Net       string  `json:"net"`
-	Kind      string  `json:"kind"`
-	PinX      float64 `json:"pinX"`
-	PinY      float64 `json:"pinY"`
-	Direction string  `json:"direction"`
-	Offset    float64 `json:"offset"`
+	Net       string                 `json:"net"`
+	Kind      string                 `json:"kind"`
+	PinX      float64                `json:"pinX"`
+	PinY      float64                `json:"pinY"`
+	Direction string                 `json:"direction"`
+	Offset    float64                `json:"offset"`
+	Anchor    *SchematicMarkerAnchor `json:"anchor,omitempty"`
 }
 
 type powerLayoutPlan struct {
@@ -84,12 +87,13 @@ type powerLayoutSnapshot struct {
 		PinsAvailable *bool          `json:"pinsAvailable"`
 		NetAmbiguous  bool           `json:"netAmbiguous"`
 		Pins          []struct {
-			Number string   `json:"pinNumber"`
-			Name   string   `json:"pinName"`
-			Net    *string  `json:"net"`
-			X      *float64 `json:"x"`
-			Y      *float64 `json:"y"`
-			NC     bool     `json:"noConnected"`
+			Number   string   `json:"pinNumber"`
+			Name     string   `json:"pinName"`
+			Net      *string  `json:"net"`
+			X        *float64 `json:"x"`
+			Y        *float64 `json:"y"`
+			Rotation *float64 `json:"rotation"`
+			NC       bool     `json:"noConnected"`
 		} `json:"pins"`
 	} `json:"components"`
 }
@@ -303,7 +307,7 @@ func planPowerLayout(raw []byte, o powerLayoutOptions) (*powerLayoutPlan, error)
 				return nil, fmt.Errorf("%s: missing/off-grid/duplicate/unconnected pin data", c.Designator)
 			}
 			numbers[pin.Number] = true
-			p.Pins = append(p.Pins, powerLayoutPin{Number: pin.Number, Name: pin.Name, Net: *pin.Net, X: snapAnchor(*pin.X), Y: snapAnchor(*pin.Y)})
+			p.Pins = append(p.Pins, powerLayoutPin{Number: pin.Number, Name: pin.Name, Net: *pin.Net, X: snapAnchor(*pin.X), Y: snapAnchor(*pin.Y), Rotation: pin.Rotation})
 		}
 		sort.Slice(p.Pins, func(i, j int) bool { return p.Pins[i].Number < p.Pins[j].Number })
 		parts[c.Designator] = p
@@ -353,8 +357,8 @@ func planPowerLayout(raw []byte, o powerLayoutOptions) (*powerLayoutPlan, error)
 	if err != nil {
 		return nil, err
 	}
-	// A component bbox excludes its designator/value. Reserve that right-hand
-	// text column before the duplicate VOUT marker, including the same 20-unit
+	// A component bbox excludes its external text. Reserve only the Designator's
+	// right-hand column before the duplicate VOUT marker, including the same 20-unit
 	// cluster clearance used by the live gate. The marker name is centered on
 	// its stub; reserve its half-width on the capacitor-facing side.
 	duplicateReach := 4*schAnchorGrid + math.Max(markerBBoxProfile("power", outNet).Far, plPowerTextWidth(outNet)/2)
@@ -362,7 +366,18 @@ func planPowerLayout(raw []byte, o powerLayoutOptions) (*powerLayoutPlan, error)
 	ip := plPin(input, "1")
 	input = plTranslate(input, plFloor(p3.X-inputGap)-ip.X, p3.Y-ip.Y)
 	plan.Placements = append(plan.Placements, input)
-	plan.Wires = append(plan.Wires, powerLayoutWire{Net: inNet, Points: [][2]float64{{plPin(input, "1").X, p3.Y}, {p3.X, p3.Y}}})
+	// The shared rail is above vertical capacitor pins, not through their
+	// endpoints. Core pins leave horizontally before reaching that rail.
+	escape := float64(schAnchorGrid)
+	inputX := plPin(input, "1").X
+	plan.Wires = append(plan.Wires, powerLayoutWire{Net: inNet, Points: [][2]float64{{inputX, p3.Y + escape}, {p3.X - escape, p3.Y + escape}}})
+	railStems := []powerLayoutWire{
+		{Net: inNet, Points: [][2]float64{{inputX, p3.Y}, {inputX, p3.Y + escape}}},
+		{Net: inNet, Points: [][2]float64{{p3.X, p3.Y}, {p3.X - escape, p3.Y}}},
+		{Net: inNet, Points: [][2]float64{{p3.X - escape, p3.Y}, {p3.X - escape, p3.Y + escape}}},
+		{Net: outNet, Points: [][2]float64{{p4.X, p4.Y}, {p4.X + escape, p4.Y}}},
+		{Net: outNet, Points: [][2]float64{{p4.X + escape, p4.Y}, {p4.X + escape, p4.Y + escape}}},
+	}
 	previous := p4
 	var previousCap *powerLayoutPlacement
 	for _, r := range refs[2:] {
@@ -374,27 +389,36 @@ func planPowerLayout(raw []byte, o powerLayoutOptions) (*powerLayoutPlan, error)
 		gap := plCeil(math.Max(2*schStubLen, c.BBox.MaxX-c.BBox.MinX+4*schAnchorGrid))
 		if previousCap != nil {
 			// Consecutive output capacitors share a rail, but the left one's
-			// two annotation lines must end before the right one's symbol.
+			// Designator must end before the right one's symbol.
 			leftReach := pin.X - c.BBox.MinX
 			gap = math.Max(gap, plCeil(plPowerCapRightReach(*previousCap)+bslPartGap+leftReach))
 		}
 		c = plTranslate(c, previous.X+gap-pin.X, p4.Y-pin.Y)
 		next := plPin(c, "1")
 		plan.Placements = append(plan.Placements, c)
-		plan.Wires = append(plan.Wires, powerLayoutWire{Net: outNet, Points: [][2]float64{{previous.X, p4.Y}, {next.X, p4.Y}}})
+		startX := previous.X
+		if previousCap == nil {
+			startX += escape
+		}
+		plan.Wires = append(plan.Wires, powerLayoutWire{Net: outNet, Points: [][2]float64{{startX, p4.Y + escape}, {next.X, p4.Y + escape}}})
+		railStems = append(railStems, powerLayoutWire{Net: outNet, Points: [][2]float64{{next.X, next.Y}, {next.X, next.Y + escape}}})
 		previous = next
 		placedCap := c
 		previousCap = &placedCap
 	}
-	plan.Flags = append(plan.Flags, powerLayoutFlag{inNet, "power", plPin(input, "1").X, p3.Y, "up", schStubLen}, powerLayoutFlag{outNet, "power", previous.X, previous.Y, "up", schStubLen}, powerLayoutFlag{outNet, "power", p2.X, p2.Y, "left", 4 * schAnchorGrid})
+	plan.Wires = append(plan.Wires, railStems...)
+	plan.Flags = append(plan.Flags,
+		powerLayoutFlag{Net: inNet, Kind: "power", PinX: plPin(input, "1").X, PinY: p3.Y + escape, Direction: "up", Offset: schStubLen},
+		powerLayoutFlag{Net: outNet, Kind: "power", PinX: previous.X, PinY: previous.Y + escape, Direction: "up", Offset: schStubLen},
+		powerLayoutFlag{Net: outNet, Kind: "power", PinX: p2.X, PinY: p2.Y, Direction: "left", Offset: 4 * schAnchorGrid})
 	// Ground pin exits left before turning down; the calibrated ordering puts
 	// the turn below both left-side power pins and avoids every crossing.
 	groundX := p1.X - 4*schAnchorGrid
 	plan.Wires = append(plan.Wires, powerLayoutWire{Net: gnd, Points: [][2]float64{{p1.X, p1.Y}, {groundX, p1.Y}}})
-	plan.Flags = append(plan.Flags, powerLayoutFlag{gnd, "ground", groundX, p1.Y, "down", schStubLen})
+	plan.Flags = append(plan.Flags, powerLayoutFlag{Net: gnd, Kind: "ground", PinX: groundX, PinY: p1.Y, Direction: "down", Offset: schStubLen})
 	for _, c := range plan.Placements[1:] {
 		pin := plPin(c, "2")
-		plan.Flags = append(plan.Flags, powerLayoutFlag{gnd, "ground", pin.X, pin.Y, "down", schStubLen})
+		plan.Flags = append(plan.Flags, powerLayoutFlag{Net: gnd, Kind: "ground", PinX: pin.X, PinY: pin.Y, Direction: "down", Offset: schStubLen})
 	}
 	for _, c := range plan.Placements {
 		for _, p := range c.Pins {
@@ -431,7 +455,11 @@ func planPowerLayout(raw []byte, o powerLayoutOptions) (*powerLayoutPlan, error)
 // excluding the netport body. Pin-to-body distance is measured independently.
 func plPowerTextWidth(text string) float64 { return acPortTotalLen(text) - acPortBodyLen }
 func plPowerCapRightReach(c powerLayoutPlacement) float64 {
-	textWidth := math.Max(plPowerTextWidth(c.Designator), plPowerTextWidth(c.Value))
+	// Page collision/containment includes the Designator only. Value/model/MPN
+	// remain source data and may render, but must not push components apart or
+	// expand a module frame. Keep this legacy planner aligned with the shared
+	// schematic data contract instead of making long supplier text control XY.
+	textWidth := plPowerTextWidth(c.Designator)
 	return c.BBox.MaxX - plPin(c, "1").X + 2*schAnchorGrid + textWidth
 }
 
@@ -455,6 +483,7 @@ func plTranslate(c powerLayoutPlacement, dx, dy float64) powerLayoutPlacement {
 }
 
 func plRotate(c powerLayoutPlacement, quarters int) powerLayoutPlacement {
+	quarters = (quarters%4 + 4) % 4
 	rotate := func(x, y float64) (float64, float64) {
 		x -= c.X
 		y -= c.Y
@@ -466,6 +495,10 @@ func plRotate(c powerLayoutPlacement, quarters int) powerLayoutPlacement {
 	c.Pins = append([]powerLayoutPin(nil), c.Pins...)
 	for i := range c.Pins {
 		c.Pins[i].X, c.Pins[i].Y = rotate(c.Pins[i].X, c.Pins[i].Y)
+		if r := c.Pins[i].Rotation; r != nil {
+			turned := math.Mod(*r+float64(quarters)*90+360, 360)
+			c.Pins[i].Rotation = &turned
+		}
 	}
 	b := layoutBBox{MinX: math.Inf(1), MinY: math.Inf(1), MaxX: math.Inf(-1), MaxY: math.Inf(-1)}
 	for _, v := range [][2]float64{{c.BBox.MinX, c.BBox.MinY}, {c.BBox.MinX, c.BBox.MaxY}, {c.BBox.MaxX, c.BBox.MinY}, {c.BBox.MaxX, c.BBox.MaxY}} {
@@ -503,11 +536,11 @@ func validatePowerLayout(plan *powerLayoutPlan, sheet layoutBBox) error {
 	}
 	for i, c := range plan.Placements {
 		if !plGrid(c.X) || !plGrid(c.Y) || !boxInside(c.BBox, sheet) {
-			return fmt.Errorf("%s: planned component outside sheet or off-grid", c.Designator)
+			return schObstruction("component-bounds", fmt.Errorf("%s: planned component outside sheet or off-grid", c.Designator), c.Designator)
 		}
 		for _, other := range plan.Placements[:i] {
 			if boxesGapOverlap(c.BBox, other.BBox, schAnchorGrid) {
-				return fmt.Errorf("component body collision: %s/%s", c.Designator, other.Designator)
+				return schObstruction("component-body", fmt.Errorf("component body collision: %s/%s", c.Designator, other.Designator), c.Designator, other.Designator)
 			}
 		}
 	}
@@ -542,22 +575,59 @@ func validatePowerLayout(plan *powerLayoutPlan, sheet layoutBBox) error {
 			}
 		}
 		for _, c := range plan.Placements {
-			if plSegmentBox(a, b, c.BBox) {
-				return fmt.Errorf("%s wire passes through %s body", s.Net, c.Designator)
+			if plWireEntersBody(a, b, c) {
+				return schWireObstruction(plan, "wire-body", fmt.Errorf("%s wire passes through %s body", s.Net, c.Designator), []string{s.Net}, c.Designator)
 			}
 			for _, p := range c.Pins {
+				if plOnSegment([2]float64{p.X, p.Y}, a, b) {
+					r, err := libPinOutwardRotation(p, c.BBox)
+					if err != nil {
+						return fmt.Errorf("%s.%s: %w", c.Designator, p.Number, err)
+					}
+					at := schguard.Point{X: p.X, Y: p.Y}
+					for _, end := range [][2]float64{a, b} {
+						if math.Abs(end[0]-p.X) <= 1e-6 && math.Abs(end[1]-p.Y) <= 1e-6 {
+							continue
+						}
+						if !schguard.PinRayOutward(r, at, schguard.Point{X: end[0], Y: end[1]}) {
+							return schWireObstruction(plan, "pin-exit-direction", fmt.Errorf("pin-exit-direction: %s.%s first wire segment must leave outward (%g degrees)", c.Designator, p.Number, r), []string{s.Net}, c.Designator)
+						}
+					}
+				}
 				if p.Net != s.Net && plOnSegment([2]float64{p.X, p.Y}, a, b) {
-					return fmt.Errorf("%s wire crosses foreign pin %s.%s", s.Net, c.Designator, p.Number)
+					return schWireObstruction(plan, "foreign-pin", fmt.Errorf("%s wire crosses foreign pin %s.%s", s.Net, c.Designator, p.Number), []string{s.Net}, c.Designator)
 				}
 			}
 		}
 		for _, other := range segments[:i] {
-			if other.Net != s.Net && plSegmentsMeet(a, b, other.Points[0], other.Points[1]) {
-				return fmt.Errorf("wire crossing joins %s and %s", s.Net, other.Net)
+			if other.Net != s.Net && plSegmentsContact(a, b, other.Points[0], other.Points[1]) {
+				return schWireObstruction(plan, "foreign-wire-contact", fmt.Errorf("wire crossing joins %s and %s", s.Net, other.Net), []string{s.Net, other.Net})
 			}
 		}
 	}
 	return nil
+}
+
+func plWireEntersBody(a, b [2]float64, c powerLayoutPlacement) bool {
+	x, y := schguard.Point{X: a[0], Y: a[1]}, schguard.Point{X: b[0], Y: b[1]}
+	box := schguard.BBox{MinX: c.BBox.MinX, MinY: c.BBox.MinY, MaxX: c.BBox.MaxX, MaxY: c.BBox.MaxY}
+	if !schguard.SegmentEntersBody(x, y, box) {
+		return false
+	}
+	for _, p := range c.Pins {
+		r, err := libPinOutwardRotation(p, c.BBox)
+		if err != nil {
+			continue
+		}
+		at := schguard.Point{X: p.X, Y: p.Y}
+		if math.Abs(a[0]-p.X) <= 1e-6 && math.Abs(a[1]-p.Y) <= 1e-6 && schguard.PinHaloExit(at, y, box, r) {
+			return false
+		}
+		if math.Abs(b[0]-p.X) <= 1e-6 && math.Abs(b[1]-p.Y) <= 1e-6 && schguard.PinHaloExit(at, x, box, r) {
+			return false
+		}
+	}
+	return true
 }
 
 func plOnSegment(p, a, b [2]float64) bool {

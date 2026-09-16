@@ -162,7 +162,7 @@ func schematicVariantPhysicalPinIslands(layout *SchematicLayoutResult) (map[sche
 	}
 	for i, segment := range segments {
 		for j, other := range segments[:i] {
-			if plSegmentsMeet(segment.Points[0], segment.Points[1], other.Points[0], other.Points[1]) {
+			if plSegmentsContact(segment.Points[0], segment.Points[1], other.Points[0], other.Points[1]) {
 				if segment.Net != other.Net {
 					return nil, fmt.Errorf("foreign nets physically intersect: %s/%s", segment.Net, other.Net)
 				}
@@ -337,12 +337,22 @@ func validateSchematicVariantPreservation(z SchematicRenderZone, alternative *Sc
 		}
 		for _, pin := range c.Pins {
 			p, exists := pins[pin.Number]
-			if !exists || p.Name != pin.Name || p.Net != pin.Net || !schematicVariantNumberEqual(p.X, pin.X) || !schematicVariantNumberEqual(p.Y, pin.Y) {
+			if !exists || p.Name != pin.Name || p.Net != pin.Net || !schematicVariantNumberEqual(p.X, pin.X) || !schematicVariantNumberEqual(p.Y, pin.Y) || !schematicVariantPinRotationEqual(p.Rotation, pin.Rotation) {
 				return fmt.Errorf("component %s pin %s changed name/net/coverage or rigid geometry", c.Designator, pin.Number)
 			}
 		}
 	}
 	return nil
+}
+
+// Missing official direction is not equivalent to an explicit direction: a
+// candidate must preserve measurement provenance as well as its rigid angle.
+func schematicVariantPinRotationEqual(a, b *float64) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return schematicVariantRotationValid(*a) && schematicVariantRotationValid(*b) &&
+		schematicVariantNumberEqual(schematicVariantRotation(*a), schematicVariantRotation(*b))
 }
 
 func schematicVariantRotationValid(angle float64) bool {

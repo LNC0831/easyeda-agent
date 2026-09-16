@@ -478,13 +478,20 @@ func mergeMarkerGeomFindings(cfg *appConfig, window string, allPages bool, overl
 
 // mergeMarkerGeomFindingsWith 是带**预读快照**的版本(geom=nil 时行为不变)。
 func mergeMarkerGeomFindingsWith(cfg *appConfig, window string, allPages bool, overlapEps float64, rep *checkReport, stderr io.Writer, geom *schGeomSnapshot) {
-	payload := map[string]any{"includeBBox": true}
+	payload := map[string]any{"includeBBox": true, "includePins": true}
 	if allPages {
 		payload["allPages"] = true
 	}
-	comps, perr := geom.compsOr(cfg, window, payload)
+	geometryResult, perr := geom.resultOr(cfg, window, payload)
+	var comps []layoutComp
+	if perr == nil {
+		comps, perr = parseLayoutComps(geometryResult.Result)
+	}
 	if perr != nil {
 		fmt.Fprintf(stderr, "sch check: marker-geometry skipped — %v\n", perr)
+		rep.Findings = append(rep.Findings, checkFinding{Type: "marker-geometry-unavailable", Level: "ERROR", Message: perr.Error()})
+		rep.Summary.Total = len(rep.Findings)
+		rep.Passed = false
 		return
 	}
 	titleBlock, tbSource := titleBlockKeepoutWithSource(sheetBBoxOf(comps))
@@ -493,12 +500,16 @@ func mergeMarkerGeomFindingsWith(cfg *appConfig, window string, allPages bool, o
 	// redundant-net-marker needs the wire trees (exec_js read, stable). Best-effort:
 	// a wire-read failure skips this rule only. Single-page only (wires are read
 	// from the active page).
+	var visualWires []schGroupWire
 	if !allPages {
 		if wires, werr := fetchSchWirePolylinesStable(cfg, window, ""); werr != nil {
 			fmt.Fprintf(stderr, "sch check: redundant-marker/reversed-flag skipped — wire read failed: %v\n", werr)
+			geo = append(geo, checkFinding{Type: "wire-geometry-unavailable", Level: "ERROR", Message: "wire-dependent visual checks could not run: " + werr.Error()})
 		} else {
+			visualWires = wires
 			geo = append(geo, redundantNetMarkerFindings(comps, wires)...)
 			geo = append(geo, reversedNetFlagFindings(comps, wires)...)
+			geo = append(geo, schWireGeometryFindings(geometryResult.Result, wires)...)
 		}
 	}
 
@@ -507,6 +518,7 @@ func mergeMarkerGeomFindingsWith(cfg *appConfig, window string, allPages bool, o
 	// in one session when it lived only in docs. Scope to the single page under
 	// check (allPages inflates the part count while text.list is active-page only).
 	if !allPages {
+		geo = append(geo, liveSchFrameCollisionFindings(cfg, window, comps, visualWires)...)
 		for _, pf := range partitionFinding(cfg, window, comps, stderr) {
 			geo = append(geo, *pf)
 		}
@@ -515,6 +527,8 @@ func mergeMarkerGeomFindingsWith(cfg *appConfig, window string, allPages bool, o
 			geo = append(geo, *tf)
 		}
 
+	} else {
+		geo = append(geo, checkFinding{Type: "partition-geometry-unavailable", Level: "ERROR", Message: "multi-page shallow reads cannot verify frame/Designator geometry; run sch check separately with --doc for each page"})
 	}
 
 	if len(geo) == 0 {

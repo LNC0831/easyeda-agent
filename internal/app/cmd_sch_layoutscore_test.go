@@ -11,6 +11,35 @@ import (
 	"testing"
 )
 
+func TestSchLayoutScoreVisualCoverage(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		checked  bool
+		findings []checkFinding
+		want     string
+	}{
+		{"missing", false, nil, schDimSkipped},
+		{"measured", true, nil, schDimScored},
+		{"bbox unavailable", true, []checkFinding{{Type: "designator-geometry-unavailable", Message: "missing bbox"}}, schDimSkipped},
+		{"wire unavailable", true, []checkFinding{{Type: "wire-geometry-unavailable", Message: "read failed"}}, schDimSkipped},
+		{"real collision", true, []checkFinding{{Type: "designator-overlap", Designator: "Q1"}}, schDimScored},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := analyzeSchLayoutScore([]layoutComp{ceshiU2()}, schScoreInputs{VisualChecked: tc.checked, VisualFindings: tc.findings})
+			d := dimOf(t, rep, schDimFrameFit)
+			if d.Status != tc.want {
+				t.Fatalf("%+v", d)
+			}
+			if tc.want == schDimSkipped && rep.Verdict != "incomplete" {
+				t.Fatal("missing coverage passed")
+			}
+			if tc.name == "real collision" && d.Score >= 100 {
+				t.Fatal("collision not penalized")
+			}
+		})
+	}
+}
+
 func lsPart(id, desig string, x, y float64, bb layoutBBox, pins ...layoutPin) layoutComp {
 	return layoutComp{
 		ID: id, Designator: desig, ComponentType: schLayoutPartType,
@@ -269,7 +298,7 @@ func TestSchLayoutScoreFrameFitTextOverPart(t *testing.T) {
 	// text 不是 marker,lsMarker 只是借壳造图元;componentType 才是判据。
 	rep := analyzeSchLayoutScore(comps, schScoreInputs{})
 	d := dimOf(t, rep, schDimFrameFit)
-	if d.Status != schDimScored || len(d.Attributions) != 1 || d.Attributions[0].Target != "R3" {
+	if d.Status != schDimSkipped || len(d.Attributions) != 1 || d.Attributions[0].Target != "R3" {
 		t.Fatalf("text-over-part: want scored + 1 attribution on R3, got status=%s attrs=%+v", d.Status, d.Attributions)
 	}
 	if d.Score != 100-schScoreTextOverPenalty {
@@ -294,8 +323,8 @@ func TestSchLayoutScoreOverallWeightingAndVerdict(t *testing.T) {
 	if rep.Verdict != schScoreVerdict(&rep) {
 		t.Fatalf("verdict %q not derived from schScoreVerdict (single source)", rep.Verdict)
 	}
-	if rep.Verdict != "excellent" {
-		t.Fatalf("verdict = %q, want excellent for %v", rep.Verdict, rep.Overall)
+	if rep.Verdict != "incomplete" {
+		t.Fatalf("verdict = %q, want incomplete for %v", rep.Verdict, rep.Overall)
 	}
 	if rep.ScoredDims != 4 || rep.SkippedDims != 1 {
 		t.Fatalf("scored/skipped = %d/%d, want 4/1", rep.ScoredDims, rep.SkippedDims)

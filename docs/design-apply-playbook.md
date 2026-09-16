@@ -1,5 +1,9 @@
 # SCH Apply 队列与状态守卫
 
+设计与修复遵守 [数据驱动架构基准](../skills/easyeda-agent/references/schematic-data.md#数据驱动架构基准)。
+队列是源目标经算法生成的派生产物，不能手改坐标/断言绕过失败；普通队列的低层能力
+不扩大用户授权，也不能替代可重复的源数据闭环。
+
 `easyeda sch apply` 顺序执行版本化 JSON 队列，等待每步 WebSocket 响应，捕获结果并记录
 journal。布局计算和差异判断在生成侧完成；Apply 负责执行和回读验证，不提供事务回滚。
 Lib 组合入口见 [单页组合](schematic-page-composition.md)。

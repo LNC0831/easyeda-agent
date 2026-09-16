@@ -1,5 +1,61 @@
 # Changelog
 
+## [1.5.0-dev.9] — 2026-09-17 (local development only; Web Apply pending)
+
+- Add `sch layout-edit` for stable-ID core moves and D1.3-style pin-marker repair. Core moves translate one owned zone exactly once, preserve all other zones, and fix the requested core coordinate while replanning only its peripherals when a rigid move collides.
+- Persist explicit pin and wire-tree marker anchors. Reject reversed pin exits, ambiguous physical wire islands, cross-zone shared branches, stale source/page/live geometry and exhausted bounded searches instead of guessing ownership or silently retargeting a pin label to a trunk.
+- Add the daemon-local `schematic.pin.repair_marker` action for a serialized, journaled replacement of one verified wire+marker branch while unrelated legacy findings and out-of-scope objects remain byte-stable. Partial writes, timeouts, stale fingerprints and altered marker orientation fail closed without retry or rollback claims.
+- Cover rigid/replanned moves, multi-level attachment non-duplication, fixed-page compose, D1.3 `(165,1050)→(145,1050)`, old-error-preserving scoped repair and failure paths. Retained original P1/P2 inputs replay offline successfully; this is not a Web Apply or v1.5.0 release acceptance claim.
+
+## [1.5.0-dev.8] — 2026-09-16 (local development only; live acceptance pending)
+
+- Synchronize the Skill and algorithm-validation documentation with the packaged obstacle-aware solver and its exact local-runtime boundary. Preserve the dev.7 algorithm and regression results unchanged; Web Apply still requires a fresh-session local version gate.
+
+## [1.5.0-dev.7] — 2026-09-16 (local development only; live acceptance pending)
+
+- Add bounded obstacle-aware 5-raw directional A* routing after straight and orthogonal fast paths, with official pin-exit direction, 40/80/160/320-raw search envelopes, exact physical-island merge verification, and shared contact semantics for X crossings, T contacts, endpoints and overlaps.
+- Route pins and existing wire trees directly to another same-net physical island, including legal mid-segment tree access; preserve a crossing as one uninterrupted segment so exporting a route cannot manufacture a junction.
+- Add bounded whole-round wire rerouting and evidence-driven rigid relocation of blocking components plus explicit attachment descendants. Preserve explicit attachment and allowed-rotation authority, share node/candidate budgets, and retain deterministic termination classes.
+- Persist replayable success/failure reports with source hashes, route timing, expanded-node and reroute counts, failed islands, candidate summaries and attributed rejected edges; diagnostic output remains ineligible for compose or Apply.
+- Pass the retained original P1 three-zone and P2 five-zone offline regressions without mutating their inputs. P1 uses 184,652/200,000 expanded nodes and four reroutes; live Web Apply and readback remain separately gated.
+
+## [1.5.0-dev.6] — 2026-09-15 (in development; not installed or accepted)
+
+- Add an instance-preserving composition path for existing schematic relayouts, with source and readback guards for native identity and original properties. Source implementation and offline tests are present; live validation remains pending and dev.5 remains installed.
+- Isolated EasyEDA Pro 3.2.186 probes confirm that proper interior crossings remain disconnected, while endpoint T contacts merge nets. Align planned and observed physical-contact topology with these distinct semantics; retain hard pin/body/text and foreign-contact checks. This is not a live page-repair acceptance claim.
+- Expose offline layout diagnostics through `sch layout-plan --report`, preserving the source hash and structured failure chain while retaining nonzero failures and no partial layout output. General solver validation, rather than a single repaired schematic, is the development objective.
+- Attribute placement conflicts to attachment hosts and both sides of geometric obstructions, including prior wire owners. Backjump over unrelated checkpoints only with complete ownership and no possible future host; retain the original bounded search budget. Cover successful repairs, conservative refusal and identity/rigid-transform invariants with synthetic regressions.
+- Refuse unsafe legacy group-move/disconnect operations before mutation for unsupported multi-segment or crossing topology and missing geometry; retain simple single-segment behavior.
+
+## [1.5.0-dev.5] — 2026-09-14 (local development only; acceptance pending)
+
+- Preserve measured world-coordinate pin directions through layout parsing, rigid rotations and candidate validation. Share first-segment direction and narrowly scoped own-pin stroke-halo checks with the mandatory execution guard.
+- Route out of both physical pins before turning; reject side-entry routes during offline planning instead of relying only on the later live execution refusal.
+- Reserve a minimum 5-raw outward escape for each connected pin while placing components, so a peripheral cannot block a still-unwired core pin. Do not create imaginary electrical wires for this geometric reservation.
+- Search a bounded set of explicitly permitted peripheral poses when the source pose cannot yield a complete baseline. Preserve a 20,000-candidate source window, share the total budget across attempts and report every failure without claiming global infeasibility.
+- Keep complete measured pin-direction evidence in variant preservation checks; reject candidates that drop or forge the supplied direction.
+- Live dev.4 negative validation detected 14 P1 and 11 P2 violations and proved automatic refusal without mutation. This development work does not yet establish repaired ceshi pages or release acceptance.
+
+## [1.5.0-dev.4] — 2026-09-14 (local development only)
+
+- Preserve explicit fail-fast end-to-end probe deadlines while reserving bounded before/after geometry-read budgets for normal schematic mutations. Keep the connector's original write execution deadline unchanged.
+- Include the completed dedicated-signal ownership guard and actual-wire readback regressions from the development validation cycle; live acceptance remains separately required.
+
+## [1.5.0-dev.3] — 2026-09-14 (local development only)
+
+- Share pure pin-exit and wire/body checks between schematic check and mandatory daemon mutation guards; reject invalid typed wire requests before dispatch and verify live wire coverage afterward, without an optional strict flag.
+- Serialize writes and document-changing reads during automatic verification; preserve the original action deadline plus separate geometry-read budgets and expose partial/unknown outcomes as failures.
+- Preserve explicit core/peripheral ownership in complete compose/Apply validation; require real peripheral attachment paths and local core/peripheral signal trees, not matching labels or frames.
+- Expose geometry-only pin reads without compiling a netlist, stable wire IDs and explicit wire-read availability; retain null net evidence rather than inventing floating connections.
+- Add regression negatives for the actual USBC1 reverse fanout and label-separated peripherals. Offline checks do not constitute installed or live schematic acceptance.
+
+## [1.5.0-dev.2] — 2026-09-14 (local development only)
+
+- Add data-driven live schematic checks for overlapping module frames, free-text geometry, and visible Designator geometry/containment; missing required geometry is an error instead of a silent pass.
+- Exclude Value, model, MPN, description, and other non-Designator component properties from page collision, clearance, frame containment, and fallback reservation calculations while preserving their source data.
+- Fix the schematic architecture baseline around immutable observations, explicit core/peripheral ownership, complete zone solving, rigid whole-zone page placement, fixed conversion, official readback, strict gates, and explicit save; mark superseded workflows across project and Skill documentation.
+- Add sanitized ceshi geometry regressions and positive/negative tests for Designator collisions, Value exclusion, live frame overlaps, and incomplete visual evidence.
+
 ## [1.5.0] — 2026-09-12
 
 ### Added

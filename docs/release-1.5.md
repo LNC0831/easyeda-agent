@@ -1,6 +1,9 @@
 # 1.5 发布与验证
 
-本次发布 **v1.5.0**，把此前本地开发验证的布局、数据复用和运行时修复合入正式版本。
+本文是 **v1.5.0 的发布说明草案**，不构成发布或 ceshi 验收通过的证据。
+数据驱动架构以 [统一基准](../skills/easyeda-agent/references/schematic-data.md#数据驱动架构基准) 为准；
+文档更新、源码通过、本地安装验证与正式发布分别记录，不互相替代。
+本次计划把此前本地开发验证的布局、数据复用和运行时修复合入正式版本。
 版本与下载以 [GitHub Release](https://github.com/zhoushoujianwork/easyeda-agent/releases/tag/v1.5.0)
 为准，完整条目见 [Changelog](../extension/CHANGELOG.md)。
 

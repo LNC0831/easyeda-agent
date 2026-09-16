@@ -137,7 +137,7 @@ type schScoreDimension struct {
 
 type schLayoutScoreReport struct {
 	Overall float64 `json:"overall"`
-	Verdict string  `json:"verdict"` // excellent | good | fair | poor | unscored
+	Verdict string  `json:"verdict"` // excellent | good | fair | poor | incomplete | unscored
 	// MinScore 只有显式传了 --min-score 才非零 —— 无它时本命令永远 exit 0。
 	MinScore   float64             `json:"minScore,omitempty"`
 	Dimensions []schScoreDimension `json:"dimensions"`
@@ -162,6 +162,9 @@ func (r *schLayoutScoreReport) dimension(id string) *schScoreDimension {
 func schScoreVerdict(rep *schLayoutScoreReport) string {
 	if rep.ScoredDims == 0 {
 		return "unscored"
+	}
+	if rep.SkippedDims > 0 {
+		return "incomplete"
 	}
 	switch {
 	case rep.Overall >= 90:
@@ -190,6 +193,10 @@ type schScoreInputs struct {
 	// ModuleOf 是 位号(大写)→模块名(来自 sch zones claims)。有它时核心在本模块
 	// 内推导,防止跨模块误归因(POWER 模块的 C1/C2/C3 被建议搬到 U2 旁)。
 	ModuleOf map[string]string
+	// Shared live check results: rendered frames, free text and Designator only.
+	// Non-designator properties are deliberately outside the acceptance scope.
+	VisualChecked  bool
+	VisualFindings []checkFinding
 }
 
 // schScoreScene 是五个维度共用的一次性推导结果。
@@ -889,6 +896,20 @@ func scoreStubTidiness(s *schScoreScene) schScoreDimension {
 func scoreFrameFit(s *schScoreScene) schScoreDimension {
 	d := schScoreDimension{ID: schDimFrameFit, Title: schScoreDimTitles[schDimFrameFit],
 		Status: schDimScored, Weight: schScoreDimWeights[schDimFrameFit]}
+	if s.in.VisualChecked {
+		for _, f := range s.in.VisualFindings {
+			if strings.Contains(f.Type, "unavailable") || f.Type == "part-frame-unresolved" {
+				d.Status = schDimSkipped
+				d.Reason = "现场几何检查不完整: " + f.Type + ": " + f.Message
+			}
+			d.Attributions = append(d.Attributions, schScoreAttribution{Dimension: schDimFrameFit, Target: f.Designator, Penalty: schScoreTextOverPenalty, Message: f.Type + ": " + f.Message})
+		}
+		d.Score = clampScore(100 - float64(len(d.Attributions))*schScoreTextOverPenalty)
+		if d.Status == schDimScored {
+			d.Reason = "现场框/自由文字/位号 bbox 已测；非位号属性文字按验收范围排除；标记文字带为估算"
+		}
+		return d
+	}
 	var texts []layoutComp
 	for _, c := range s.comps {
 		if c.ComponentType == "text" && c.BBox != nil {
@@ -920,7 +941,8 @@ func scoreFrameFit(s *schScoreScene) schScoreDimension {
 		}
 	}
 	d.Score = clampScore(100 - penalty)
-	d.Reason = "分区框几何不可得,框内外溢子项未测"
+	d.Status = schDimSkipped
+	d.Reason = "已检查说明文字压器件，但分区框及位号几何未完整测量；型号/参数越框不纳入判据；该维未完成，归因仅供诊断"
 	return d
 }
 
@@ -943,9 +965,9 @@ func newSchLayoutScoreCmd(cfg *appConfig, window *string, stdout, stderr io.Writ
 			"  proximity        R/C/L 无源件到核心件的边距(≤150 满分,≥500 记 0)。核心只认大件,\n" +
 			"                   有 sch zones 认领时在本模块内推导;未分区且只挂电源网的去耦件豁免\n" +
 			"  stub-tidiness    小件+两端标记的长链跨度 >250;同排净距 <117 的标签挤压\n" +
-			"  frame-fit        说明文字压电路;分区框几何不可得时 skipped(≠满分)\n\n" +
+			"  frame-fit        现场分区框、自由文字、位号边界与遮挡；型号/参数文字排除；缺测 skipped\n\n" +
 			"每条归因带 fix 字段:已填好真实位号/坐标的可执行命令,照抄运行即可修复。\n" +
-			"无 --min-score 时永远 exit 0;显式给了才在综合分低于它时非零退出。",
+			"无 --min-score 时仅作诊断;显式给了则缺测或综合分低于阈值均非零退出。",
 		Example: "  easyeda sch layout-score\n" +
 			"  easyeda sch layout-score --json\n" +
 			"  easyeda sch layout-score --min-score 75   # 当门用(不建议;门是 layout-lint)",
@@ -970,6 +992,12 @@ func newSchLayoutScoreCmd(cfg *appConfig, window *string, stdout, stderr io.Writ
 			} else {
 				in.ModuleOf = moduleOf
 			}
+			in.VisualChecked = true
+			wires, werr := fetchSchWirePolylinesStable(cfg, *window, "")
+			in.VisualFindings = liveSchFrameCollisionFindings(cfg, *window, comps, wires)
+			if werr != nil {
+				in.VisualFindings = append(in.VisualFindings, checkFinding{Type: "wire-geometry-unavailable", Level: "ERROR", Message: werr.Error()})
+			}
 			rep := analyzeSchLayoutScore(comps, in)
 			rep.MinScore = minScore
 
@@ -982,14 +1010,17 @@ func newSchLayoutScoreCmd(cfg *appConfig, window *string, stdout, stderr io.Writ
 			} else {
 				renderSchLayoutScore(rep, showAll, stdout)
 			}
-			if minScore > 0 && rep.Overall < minScore {
+			if cmd.Flags().Changed("min-score") && rep.SkippedDims > 0 {
+				return fmt.Errorf("sch layout-score incomplete: %d dimensions unverified", rep.SkippedDims)
+			}
+			if cmd.Flags().Changed("min-score") && rep.Overall < minScore {
 				return fmt.Errorf("sch layout-score %.1f below --min-score %.1f", rep.Overall, minScore)
 			}
 			return nil
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "emit the report as JSON")
-	c.Flags().Float64Var(&minScore, "min-score", 0, "fail (non-zero exit) when the weighted overall falls below this; unset = always exit 0")
+	c.Flags().Float64Var(&minScore, "min-score", 0, "fail when any dimension is unverified or the weighted overall falls below this; unset = diagnostic only")
 	c.Flags().BoolVar(&showAll, "all", false, "list every attribution instead of the top few per dimension")
 	return c
 }

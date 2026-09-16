@@ -17,6 +17,8 @@ type schematicStateExpectation struct {
 	ExactParts  bool                                `json:"exactParts,omitempty"`
 	Parts       map[string]schematicPartExpectation `json:"parts"`
 	Drawing     *schematicDrawingExpectation        `json:"drawing,omitempty"`
+	Ownership   *schematicOwnershipExpectation      `json:"ownership,omitempty"`
+	SourceScene map[string]any                      `json:"sourceScene,omitempty"`
 }
 
 type schematicPartExpectation struct {
@@ -28,6 +30,7 @@ type schematicPartExpectation struct {
 	Mirror      *bool                              `json:"mirror,omitempty"`
 	BBox        *layoutBBox                        `json:"bbox,omitempty"`
 	Pins        map[string]schematicPinExpectation `json:"pins"`
+	Instance    map[string]any                     `json:"instance,omitempty"`
 }
 
 // This is the hydrated library identity from components.list with
@@ -51,6 +54,9 @@ func (p *schematicPartExpectation) UnmarshalJSON(data []byte) error {
 	}
 	if device, exists := fields["device"]; exists && bytes.Equal(bytes.TrimSpace(device), []byte("null")) {
 		return fmt.Errorf("expectSchematic device cannot be null; omit it only when identity is not checked")
+	}
+	if instance, exists := fields["instance"]; exists && bytes.Equal(bytes.TrimSpace(instance), []byte("null")) {
+		return fmt.Errorf("expectSchematic instance cannot be null")
 	}
 	*p = schematicPartExpectation(value)
 	return nil
@@ -81,10 +87,11 @@ func measuredSchematicDevice(ref string, have map[string]any) (*schematicDeviceE
 }
 
 type schematicPinExpectation struct {
-	X   *float64 `json:"x,omitempty"`
-	Y   *float64 `json:"y,omitempty"`
-	Net *string  `json:"net,omitempty"`
-	NC  *bool    `json:"noConnected,omitempty"`
+	Name *string  `json:"name,omitempty"`
+	X    *float64 `json:"x,omitempty"`
+	Y    *float64 `json:"y,omitempty"`
+	Net  *string  `json:"net,omitempty"`
+	NC   *bool    `json:"noConnected,omitempty"`
 }
 
 // Explicit null must not silently mean "do not check this fact". Omission is
@@ -101,7 +108,7 @@ func (p *schematicPinExpectation) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
-	for _, key := range []string{"net", "noConnected"} {
+	for _, key := range []string{"net", "noConnected", "name"} {
 		if value, exists := fields[key]; exists && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
 			return fmt.Errorf("expectSchematic pin %s cannot be null; omit it when this fact is not checked", key)
 		}
@@ -156,6 +163,14 @@ func (e *schematicStateExpectation) validate() error {
 		if strings.TrimSpace(ref) == "" || part.Pins == nil {
 			return fmt.Errorf("expectSchematic part %q requires a designator and exhaustive pins map", ref)
 		}
+		if part.Instance != nil {
+			if err := validateSchPreservedInstance(part.Instance); err != nil {
+				return fmt.Errorf("%s instance: %w", ref, err)
+			}
+			if part.PrimitiveID == "" {
+				return fmt.Errorf("%s instance guard requires original primitiveId", ref)
+			}
+		}
 		if part.Device != nil {
 			if err := part.Device.validate(); err != nil {
 				return fmt.Errorf("%s: %w", ref, err)
@@ -188,9 +203,11 @@ func (e *schematicStateExpectation) validate() error {
 		}
 	}
 	if e.Drawing != nil {
-		return e.Drawing.validate()
+		if err := e.Drawing.validate(); err != nil {
+			return err
+		}
 	}
-	return nil
+	return e.validateOwnership()
 }
 
 func (e *schematicStateExpectation) jsonValue() any {
@@ -200,8 +217,23 @@ func (e *schematicStateExpectation) jsonValue() any {
 	return value
 }
 
+func (e *schematicStateExpectation) substitutionValue() map[string]any {
+	// User property strings (including literal ${...}) are data, not playbook
+	// expressions. Only the existing geometry/locator expectation is substituted.
+	base := e.jsonValue().(map[string]any)
+	delete(base, "sourceScene")
+	if parts, ok := base["parts"].(map[string]any); ok {
+		for _, p := range parts {
+			if part, ok := p.(map[string]any); ok {
+				delete(part, "instance")
+			}
+		}
+	}
+	return base
+}
+
 func (e *schematicStateExpectation) check(result any, vars map[string]string) error {
-	value, err := substVars(e.jsonValue(), vars)
+	value, err := substVars(e.substitutionValue(), vars)
 	if err != nil {
 		return err
 	}
@@ -213,12 +245,22 @@ func (e *schematicStateExpectation) check(result any, vars map[string]string) er
 	if err := json.Unmarshal(raw, &expected); err != nil {
 		return err
 	}
+	expected.SourceScene = e.SourceScene
+	for ref, part := range expected.Parts {
+		part.Instance = e.Parts[ref].Instance
+		expected.Parts[ref] = part
+	}
 	if err := expected.validate(); err != nil {
 		return err
 	}
 	root, ok := result.(map[string]any)
 	if !ok {
 		return fmt.Errorf("missing schematic components result")
+	}
+	if expected.SourceScene != nil {
+		if err := checkSchPreservedSource(expected.SourceScene, root); err != nil {
+			return err
+		}
 	}
 	components, ok := root["components"].([]any)
 	if !ok {
@@ -266,6 +308,11 @@ func (e *schematicStateExpectation) check(result any, vars map[string]string) er
 		}
 		if want.PrimitiveID != "" && have["primitiveId"] != want.PrimitiveID {
 			return fmt.Errorf("%s primitiveId: got %v, want %s", ref, have["primitiveId"], want.PrimitiveID)
+		}
+		if want.Instance != nil {
+			if err := checkSchPreservedInstance(ref, want.Instance, have); err != nil {
+				return err
+			}
 		}
 		if want.Device != nil {
 			device, err := measuredSchematicDevice(ref, have)
@@ -326,6 +373,9 @@ func (e *schematicStateExpectation) check(result any, vars map[string]string) er
 			if !exists {
 				return fmt.Errorf("%s missing pin %s", ref, number)
 			}
+			if wantPin.Name != nil && pin["pinName"] != *wantPin.Name {
+				return fmt.Errorf("%s.%s pinName changed or unavailable", ref, number)
+			}
 			for field, value := range map[string]*float64{"x": wantPin.X, "y": wantPin.Y} {
 				if err := compareStateCoordinate(ref+"."+number, field, pin, value); err != nil {
 					return err
@@ -349,7 +399,12 @@ func (e *schematicStateExpectation) check(result any, vars map[string]string) er
 		}
 	}
 	if expected.Drawing != nil {
-		return expected.Drawing.check(result)
+		if err := expected.Drawing.check(result); err != nil {
+			return err
+		}
+	}
+	if expected.Ownership != nil {
+		return expected.Ownership.check(result)
 	}
 	return nil
 }

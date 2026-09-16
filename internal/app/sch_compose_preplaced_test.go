@@ -84,6 +84,14 @@ func TestComposePreplacedPreservesTwentyRawSpacingAndGeometry(t *testing.T) {
 	}
 }
 
+func TestComposePreplacedAcceptsValidatedFixedFlowFromLayoutEdit(t *testing.T) {
+	source, page := composePreplacedFixture(t)
+	page.Sheet.Flow = "fixed"
+	if _, err := planSchCompositionWithPage(source, &page); err != nil {
+		t.Fatalf("fixed-flow layout-edit page rejected by compose: %v", err)
+	}
+}
+
 func TestComposePreplacedRejectsDivergentInput(t *testing.T) {
 	tests := []struct {
 		name string

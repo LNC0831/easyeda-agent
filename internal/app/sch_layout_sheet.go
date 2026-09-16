@@ -123,8 +123,8 @@ func validateSheetSpec(s *SchematicRenderSheet) error {
 	if s == nil || !plBoxValid(s.Bounds) || !plBoxValid(s.Border) || !boxInside(s.Border, s.Bounds) || !plFinite(s.Padding) || s.Padding < 10 || !plFinite(s.Gap) || s.Gap < 10 || s.Keepouts == nil {
 		return fmt.Errorf("sheet requires valid bounds/border, explicit keepouts, padding/gap >= 10 raw")
 	}
-	if s.Flow != "" && s.Flow != "z" && s.Flow != "compact" {
-		return fmt.Errorf("sheet.flow must be z or compact")
+	if s.Flow != "" && s.Flow != "z" && s.Flow != "compact" && s.Flow != "fixed" {
+		return fmt.Errorf("sheet.flow must be z, compact or fixed")
 	}
 	if s.Bounds.MaxX-s.Bounds.MinX > 5000 || s.Bounds.MaxY-s.Bounds.MinY > 5000 {
 		return fmt.Errorf("sheet exceeds preview search bounds")
@@ -199,6 +199,34 @@ func PlanSchematicSheets(in SchematicRenderInput) (*SchematicSheetsPreview, erro
 		return nil, err
 	}
 	hasVariants := schematicSheetHasVariants(in.Zones)
+	if in.Sheet.Flow == "fixed" {
+		if hasVariants {
+			return nil, fmt.Errorf("sheet.flow fixed requires one already-selected shape per zone")
+		}
+		for _, z := range in.Zones {
+			if z.SheetPosition == nil {
+				return nil, fmt.Errorf("sheet.flow fixed requires every zone position")
+			}
+		}
+		if err := validateSchematicSheet(in); err != nil {
+			return nil, err
+		}
+		out := &SchematicSheetsPreview{SchemaVersion: 1, PreviewOnly: true, PlacementMode: "fixed", ZoneCount: len(in.Zones), BlockedZones: []string{}, Pages: []SchematicRenderInput{in}}
+		if in.Spacing != nil {
+			spacing := *in.Spacing
+			out.Spacing = &spacing
+		}
+		for _, z := range in.Zones {
+			frame, err := sheetPreviewFrame(z, in.Spacing)
+			if err != nil {
+				return nil, err
+			}
+			out.FrameArea += (frame.Rect.MaxX - frame.Rect.MinX) * (frame.Rect.MaxY - frame.Rect.MinY)
+		}
+		usable := sheetPreviewUsable(*in.Sheet)
+		out.UsableAreaUpperBound = (usable.MaxX - usable.MinX) * (usable.MaxY - usable.MinY)
+		return out, nil
+	}
 	if hasVariants && in.Sheet.Flow != "z" {
 		return nil, fmt.Errorf("zone variants require sheet.flow z; compact does not select variants")
 	}

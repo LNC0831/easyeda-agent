@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/zhoushoujianwork/easyeda-agent/internal/connectivity"
+	"github.com/zhoushoujianwork/easyeda-agent/internal/schguard"
 )
 
 func libLayoutFixture() libLayoutSource {
@@ -130,8 +132,29 @@ func TestLibLayoutFourMeasuredSidesAndPreservedPose(t *testing.T) {
 				t.Fatal("measured pose changed")
 			}
 		}
-		if len(m.Wires) != 1 {
-			t.Fatalf("duplicate physical wire in simple direct attachment: %+v", m.Wires)
+		// A naming T branch is legitimate; count geometry, not primitives.
+		rows := make([]any, 0, len(m.Wires))
+		for _, w := range m.Wires {
+			rows = append(rows, map[string]any{"points": w.Points})
+		}
+		if err := schguard.VerifyWirePresent(map[string]any{"wires": rows}, map[string]any{"points": [][2]float64{{a.X, a.Y}, {b.X, b.Y}}}); err != nil {
+			t.Fatal("lost direct physical attachment", err)
+		}
+		for i, w := range m.Wires {
+			for _, other := range m.Wires[:i] {
+				x, y := w.Points[0], w.Points[1]
+				u, v := other.Points[0], other.Points[1]
+				axis := -1
+				if x[0] == y[0] && x[0] == u[0] && x[0] == v[0] {
+					axis = 1
+				}
+				if x[1] == y[1] && x[1] == u[1] && x[1] == v[1] {
+					axis = 0
+				}
+				if axis >= 0 && math.Max(math.Min(x[axis], y[axis]), math.Min(u[axis], v[axis])) < math.Min(math.Max(x[axis], y[axis]), math.Max(u[axis], v[axis])) {
+					t.Fatal("duplicate positive-length physical wire")
+				}
+			}
 		}
 	}
 }
@@ -340,15 +363,24 @@ func TestLibRouteMergesOverlapsWithoutLosingBranches(t *testing.T) {
 		if !bytes.Equal(before, after) {
 			t.Fatal("mutated candidate parent")
 		}
-		if len(out) != 3 {
-			t.Fatalf("expected merged trunk and retained branch/other net, got %+v", out)
+		if len(out) != 5 {
+			t.Fatalf("expected non-overlapping trunks split at the preserved real branch, got %+v", out)
 		}
-		want := wire("VOUT", pt(0, 0), pt(40, 0))
-		if !reflect.DeepEqual(out[2], want) {
-			t.Fatalf("lost trunk coverage: %+v", out)
+		for _, net := range []string{"VOUT", "OTHER"} {
+			var trunk []powerLayoutWire
+			for _, w := range out {
+				if w.Net == net && w.Points[0] != pt(15, 10) && w.Points[1] != pt(15, 10) {
+					trunk = append(trunk, w)
+				}
+			}
+			got, e := drawingEdges(trunk)
+			want, _ := drawingEdges([]powerLayoutWire{wire(net, pt(0, 0), pt(40, 0))})
+			if e != nil || !reflect.DeepEqual(got, want) {
+				t.Fatal("lost trunk coverage or merged across nets", out, e)
+			}
 		}
-		if !reflect.DeepEqual(out[0], existing[2]) || !reflect.DeepEqual(out[1], existing[3]) {
-			t.Fatal("lost branch or merged across nets")
+		if !reflect.DeepEqual(out[0], existing[2]) {
+			t.Fatal("lost branch")
 		}
 		out[0].Points[0] = pt(99, 99)
 		after, _ = json.Marshal(existing)

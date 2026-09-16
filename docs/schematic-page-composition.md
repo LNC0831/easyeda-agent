@@ -1,5 +1,10 @@
 # 单页 Lib 组合与 SCH Apply
 
+本页描述转换器；上游设计与修复遵守
+[数据驱动架构基准](../skills/easyeda-agent/references/schematic-data.md#数据驱动架构基准)。
+普通 zone 先走 `layout-plan --zones → layout-sheet-plan → layout-render`；确认的页用
+`compose --layout-page page.json` 固定转换，不能再调用默认重排覆盖选中几何/spacing。
+
 `easyeda sch compose` 把完整的 1.4 电气模型和各 Lib 已设计的局部几何合成一页原理图，
 输出布局 JSON，并可编译顺序执行的 `sch apply` 队列。它负责模块组合和数据转换；
 核心器件与外围电路的连接、局部摆放及朝向必须已在输入中确定。
@@ -19,7 +24,7 @@ modules: [
 
 | 字段 | 约束 |
 |---|---|
-| `connectivity` | 必须有目标 `projectId/documentId`、稳定器件/网络 ID、全部物理引脚及 `connections`。每个引脚恰好有一个网络或明确的 `noConnected:true`；不能用 NC 掩盖缺失的连接数据。 |
+| `connectivity` | 必须有目标 `projectId/documentId`、稳定器件/网络 ID、全部物理引脚及 `connections`。每个引脚恰好有网络、明确 NC 或有原始证据的 `connectionState:unconnected`；已知悬空保留电气警告，不能用 NC 或悬空掩盖未知数据。 |
 | `components[].device` | `libraryUuid/deviceUuid` 必须来自已解析的器件库身份。放置实例 ID 不能当库 UUID 重放。 |
 | `connectivity.modules` | 用 `coreComponents/peripheralComponents` 引用器件 ID；与几何模块成员逐项对应，每件只归属一个模块。 |
 | `sheet` | 目标页实际纸张 bbox；Apply 前再次核对。坐标单位为 0.01 inch，y 向上。 |
@@ -48,6 +53,9 @@ modules: [
 器件位置/朝向；规划器不会擅自旋转器件、重连网络或删除已有线路。
 
 ## 排版与固定贴边尺寸
+
+下述 10 raw 是未传 `--layout-page` 的默认 compose 契约；两层模式由源输入 spacing
+统一控制，固定转换保留该值。源数据/已选页的身份、完整几何和纸张必须一致。
 
 框内最小边距、模块间距、行间距、标题内缩及图签净距均为
 **10 raw = 0.1 inch = 2.54 mm**；标题与内容净距为 5 raw。
@@ -104,6 +112,11 @@ easyeda sch apply verify-apply.json --yes
 ```
 
 `--replace` 允许为不同的目标状态编译恢复/重建队列，执行发生在 `sch apply`。
+已有同一批器件仅改布局时，dev.6 开发路径为 `--replace --preserve-instances`，
+保留原实例及属性；旧破坏性 `--replace` 不作为无损重排入口。源身份/引脚/NC/属性缺失
+或不一致时必须拒绝，不能手工补队列。详见 Skill 的
+[数据架构与实例保全门禁](../skills/easyeda-agent/references/schematic-data.md)。
+dev.6 安装与现场验证仍须单独完成，不能由本文推定已发布或已通过。
 队列先核对项目/页面、工程内位号唯一性和目标旧状态；新增位号通过 `absentParts`
 检查其他页也未占用。根据新鲜回读选择以下路径：
 
@@ -111,7 +124,8 @@ easyeda sch apply verify-apply.json --yes
 |---|---|
 | 器件、引脚、net/NC、导线路径和标记完全匹配 | 保留现有电路，继续模块框及最终验收。仅同网但路径不同不算匹配。 |
 | 器件及全部引脚几何匹配，尚无接线（`reuseUnwired`） | 保留器件，复核并保存放置检查点后恢复 NC、导线和标记。 |
-| 其他状态 | 清除目标页并保留纸张；检查全部图元无残余，再重新放置和接线。 |
+| 同批实例的布局/线路变化，显式 `--preserve-instances` | 有界清理绘制内容但保留纸张、原器件和所属属性，按算法目标移动并重接，逐字段检查实例保全。 |
+| 不同器件设计的明确整页重建 | 清除目标页并保留纸张；检查全部图元无残余，再重新放置和接线；不宣称原实例已保全。 |
 
 `reuseUnwired` 必须有明确的空导线、空标记和 `connectivitySummary` 证据：
 `scope:activePage`、`wires:0`、`buses:0`，已有 NC 也不能与目标冲突。
@@ -137,9 +151,10 @@ easyeda sch apply verify-apply.json --yes
 穿越器件、重复或错误模块成员、无法容纳于单页、压住图签都会阻断规划。
 局部坐标可以来自不同页面、甚至处于目标纸张之外；最终组合必须全部落在可用纸内。
 
-当前官方器件 bbox 不包含外置位号/型号文字；标记文字预测已参与规划，但不能据此
-宣称所有器件文字都经过精确碰撞检查。旋转端子后仍须用官方导图复核外置文字，
-将所需净距写回源几何。后续应补齐器件文字占位的测量契约。
+官方器件 bbox 不完整包含外置位号，须单独采集 Designator 的类型、parent、可见性与 bbox。
+型号/参数等非位号器件属性不参与页面碰撞与框包络；不能将混合属性矩形直接填进 textBboxes。
+旋转后回读位号/引脚几何，缺测不得称完整通过。导图只辅助发现采集/规则遗漏，
+遗漏应补成数据检查与回归，修源几何后重新求解，而不是直接挪现场文字。
 
 生成队列使用 `requireFullExecution`，写操作不自动重试。失败后先保存日志并回读实际状态：
 

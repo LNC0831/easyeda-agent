@@ -27,11 +27,13 @@ func TestLibPriorityUsesPoliciesNotNames(t *testing.T) {
 func TestLibNearbyRailJoinAndObstacle(t *testing.T) {
 	for _, blocked := range []bool{false, true} {
 		p := powerLayoutPlan{Placements: []powerLayoutPlacement{
-			{Designator: "X1", BBox: layoutBBox{-10, -10, 10, 10}, Pins: []powerLayoutPin{{Number: "1", Net: "RAIL", X: 0, Y: 20}}},
-			{Designator: "X2", X: 70, BBox: layoutBBox{60, -10, 80, 10}, Pins: []powerLayoutPin{{Number: "1", Net: "RAIL", X: 70, Y: 20}}},
+			{Designator: "X1", BBox: layoutBBox{-10, -10, 10, 10}, TextBBoxes: []layoutBBox{{-10, -20, 10, -15}}, Pins: []powerLayoutPin{{Number: "1", Net: "RAIL", X: 0, Y: 20}}},
+			{Designator: "X2", X: 70, BBox: layoutBBox{60, -10, 80, 10}, TextBBoxes: []layoutBBox{{60, -20, 80, -15}}, Pins: []powerLayoutPin{{Number: "1", Net: "RAIL", X: 70, Y: 20}}},
 		}}
 		if blocked {
-			p.Wires = []powerLayoutWire{{Net: "FOREIGN", Points: [][2]float64{{35, 10}, {35, 30}}}}
+			// A proper wire crossing is noncontact. A physical body spanning
+			// every bounded outward corridor is still an actual obstacle.
+			p.Placements = append(p.Placements, powerLayoutPlacement{Designator: "WALL", BBox: layoutBBox{30, 10, 40, 200}, TextBBoxes: []layoutBBox{{30, 205, 40, 210}}})
 		}
 		policies := map[string]string{"RAIL": "local_power"}
 		before, _ := json.Marshal(p.Placements)

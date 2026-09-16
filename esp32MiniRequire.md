@@ -45,9 +45,11 @@
 
 # 二、怎么跑完这个 Demo
 
-这是本项目的**固定端到端用例**：从上面那段客户原话出发，让 agent 自己选型 → 放置 →
-编组 → 布线 → 转 PCB → 布局 → 布线 → 铺铜 → DRC → 落盘，跑完整条 S0–S6 + P0–P10。
-任何改动（layout-lint / autosave / design-flow / 连接器）之后都重跑它。
+这是本项目的**固定端到端用例**：从上面客户原话出发，让 agent 自己选型 → 源连接/归属/约束
+→ 区内及纸张计算 → Apply/数据验收 → 转 PCB → 布局/布线/铺铜 → DRC → 落盘，
+完整回归跑 S0–S6 + P0–P10。原理图专项验收按当前任务止于 S6，不称整板通过。
+影响 layout-lint / autosave / design-flow / 连接器运行行为的改动须按仓库要求跑对应回归；
+纯文档同步不冒充现场回归结果。
 
 > **本节只写这个 Demo 特有的东西。** 通用规则（环境自举、铁律、阶段定义、停点、
 > 档位默认、块地图、各命令签名）**正本都在 skill 里**，这里只给指针——照抄一份必然漂移。
@@ -56,14 +58,14 @@
 ## 0. 环境（一次性）
 
 三样东西缺一不可：**CLI/daemon**、**EasyEDA 里的连接器插件**、**外部交互权限**。
-装法与验证逐字见 **`skills/easyeda-agent/SKILL.md` 顶部的安装块**（①CLI ②连接器 ③开权限），
-排障见 **`references/environment-setup.md`**（§0.5 三方版本对齐、§3 已踩过的坑）。
+安装与版本门禁见 [Skill 入口](skills/easyeda-agent/SKILL.md) 和
+[environment-setup.md](skills/easyeda-agent/references/environment-setup.md)，不依赖旧章节编号。
 
 只强调最容易翻车的一条：**sideload 的 `.eext` 同 uuid 更新必须先卸载旧的**，
 且导入后要**完全退出重启 EasyEDA**——否则已开窗口还在跑旧代码并抢 daemon 的 socket。
 
 ```bash
-easyeda health        # windows[] 里有带 connectorVersion 的记录 = 装好了
+easyeda health        # 在 Skill 版本门禁通过后检查连接；有窗口不等于版本/现场验收通过
 ```
 
 看到 `windows: []` 就是连接器没附上，回头查权限和重启，**别往下跑**。
@@ -86,21 +88,27 @@ easyeda health        # windows[] 里有带 connectorVersion 的记录 = 装好�
 
 ## 3. 分段验收（**不要追求一次跑通**）
 
+原理图阶段统一遵守 [数据驱动架构基准](skills/easyeda-agent/references/schematic-data.md#数据驱动架构基准)：
+保留原始快照，目标副本表达连接/核心外围归属/约束，区内及纸张计算后固定转换与 Apply。
+问题由数据检查发现，回改源数据/采集/算法再重算；位号参与、非位号属性文字排除页面布局检查。
+本节仍是给人的 runbook，不进入第一节客户原始需求，也不提供预制器件/网表答案。
+
 一个重操作跨越太多步时，单次失败的爆炸半径太大（实测出现过 `zone-arrange` 把页面
 留在 26 脚断线状态）。按段走，**每段独立验收、独立存盘，段间可以中断**：
 
 | 段 | 验收标准 | 存盘点 |
 |---|---|---|
 | S0 | `easyeda spec validate .easyeda/s0-ceshi.json` 无 ERROR，且方案书经你确认 | spec 落盘 |
-| S1–S3 | 逐页 `easyeda sch bridge-check --doc <页>` 出 **0 problem tree** | 每页落完即 `sch save` |
-| S4–S6 | 逐页 `easyeda sch gate --doc <页>` 出 **PASS**；全工程 `sch nets --strict` 无同轨异名/单引脚网 | gate 过后 save |
+| S1–S3 | 原始快照/源目标/参数/版本/哈希齐全；核心外围归属、真实直连、区内/纸张几何数据校验通过 | 保留完整计算输入/输出，不把离线通过当已落图 |
+| S4–S6 | Apply 后逐项数据对账、逐页 `easyeda sch gate --strict --doc <页>` 为 pass；位号/框/标题和生成溯源检查齐全，缺测不放行 | 显式 save 并核实 `saved:true` |
 | P0–P6 | 板框 + 四角 M3 孔 + 天线全层 keepout + `pcb layout-lint --gate` 通过 | 每档 `pcb stage confirm-tier`，四档齐后 `confirm-layout` |
 | P7–P10 | 布线 + 4 层电源树 + 铺铜 + `pcb drc` 0 fatal + `pcb check` 无 ERROR | 每步 `pcb save` + `doc reload` |
 
 ### 一轮只记录不修
 
 跑 → 发现问题 → 立刻修 → 重跑 → 又发现 → 又立刻修，**永远不收敛**。
-**跑完一整段只记账不修**，段末统一决定修什么。挂账数量不降就是没收敛，该停下算账。
+发现阻塞立即停止后续写入，保留 finding/失败输入；可补只读诊断后集中决定源数据或算法修复。
+重算并验证通过才恢复下游，不继续写完整段，也不在现场逐件试凑。挂账不降时检查根因与覆盖。
 
 ## 4. 你会被问到的决策（agent 猜不了，必须你拍板）
 
@@ -118,8 +126,9 @@ easyeda health        # windows[] 里有带 connectorVersion 的记录 = 装好�
 | P2 · 接口边序 | ESP32-S3-WROOM-1 的 PCB 天线必须独占一条边且全层禁铜，剩下三边怎么分 USB-C / 5V 端子 / 按键与 LED |
 | P7 · 布线档 | 稠密板要不要停手让你在 EasyEDA 菜单里点原生自动布线 |
 
-「哪些停点必停、哪些坑永远不问用户」的完整口径在 **`SKILL.md` ②「流程停点 + 档位默认」**；
-每个决策项的选项 / 已知坑 / 推荐方案在 **`references/design-decisions.md`**。
+已确认选择与授权继续有效，不重复索取；缺失且实质影响设计时再问。
+现行流程见 [design-flow.md](skills/easyeda-agent/references/design-flow.md)，
+决策依据见 [design-decisions.md](skills/easyeda-agent/references/design-decisions.md)。
 表里这几行只是「这块板会撞到哪几个」的索引。
 
 ## 5. 验收（需求条条落实）
@@ -128,7 +137,7 @@ easyeda health        # windows[] 里有带 connectorVersion 的记录 = 装好�
 
 ```bash
 easyeda sch nets --all --project ceshi        # 逐网成员：跨页是否真连上
-easyeda sch gate --doc <每一页> --project ceshi
+easyeda sch gate --strict --doc <每一页> --project ceshi
 easyeda pcb layout-lint --gate --project ceshi
 easyeda pcb layers --project ceshi            # 4 层 + 内电层网络
 easyeda pcb drc --project ceshi               # 0 fatal

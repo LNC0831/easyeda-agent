@@ -1,5 +1,10 @@
 # Roadmap
 
+原理图现行架构以 [数据驱动架构基准](../skills/easyeda-agent/references/schematic-data.md#数据驱动架构基准)
+为准。下文 2026-08 的状态、计数及待办保留为历史规划，不作为当前能力或验收证明。
+`layout-plan --zones`、`layout-sheet-plan`、`compose --layout-page` 和 `sch block-apply`
+已存在；后续重点是补齐源数据约束消费与机器检查覆盖，不重新回到现场逐件修图架构。
+
 战略路线图——**接下来做什么、为什么、怎么算完成**。本仓库的文档分层:
 
 | 文档 | 粒度 | 性质 |

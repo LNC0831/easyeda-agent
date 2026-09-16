@@ -13,8 +13,8 @@ import (
 // A selected page is a geometry authority, not another request to pack modules.
 // The existing canonical checks and guarded writer remain shared with compose.
 func validateSchCompositionPreplaced(src schCompositionSource, page SchematicRenderInput) error {
-	if page.SchemaVersion != 1 || page.Diagnostic || page.Sheet == nil || page.Spacing == nil || page.Sheet.Flow != "z" {
-		return fmt.Errorf("layout-page requires a complete non-diagnostic single page with explicit spacing and Z flow")
+	if page.SchemaVersion != 1 || page.Diagnostic || page.Sheet == nil || page.Spacing == nil || page.Sheet.Flow != "z" && page.Sheet.Flow != "fixed" {
+		return fmt.Errorf("layout-page requires a complete non-diagnostic single page with explicit spacing and z/fixed flow")
 	}
 	if src.SheetBorder == nil || src.Keepouts == nil || src.Sheet != page.Sheet.Bounds || *src.SheetBorder != page.Sheet.Border || !reflect.DeepEqual(src.Keepouts, page.Sheet.Keepouts) {
 		return fmt.Errorf("layout-page sheet, border and keepouts must exactly match composition evidence")

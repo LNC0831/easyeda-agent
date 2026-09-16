@@ -167,8 +167,19 @@ func TestPowerLayoutRejectsCrossingsAndBodyRouting(t *testing.T) {
 	}
 	plan, _ = planPowerLayout(raw, powerLayoutTestOptions())
 	plan.Wires = append(plan.Wires, powerLayoutWire{Net: "GND", Points: [][2]float64{{430, 630}, {430, 680}}})
+	if err = validatePowerLayout(plan, sheet); err != nil {
+		t.Fatalf("bare interior crossing is not a contact: %v", err)
+	}
+	// A foreign endpoint on an actual existing segment remains a short.
+	for _, w := range plan.Wires[:len(plan.Wires)-1] {
+		a, b := w.Points[0], w.Points[1]
+		if a[1] == b[1] && plOnSegment([2]float64{430, a[1]}, a, b) {
+			plan.Wires[len(plan.Wires)-1].Points[0] = [2]float64{430, a[1]}
+			break
+		}
+	}
 	if err = validatePowerLayout(plan, sheet); err == nil || !strings.Contains(err.Error(), "wire crossing") {
-		t.Fatalf("foreign wire crossing accepted: %v", err)
+		t.Fatalf("foreign T accepted: %v", err)
 	}
 }
 
@@ -194,7 +205,7 @@ func TestPowerLayoutCanonicalizesOnlyRoundoff(t *testing.T) {
 	}
 }
 
-func TestPowerLayoutSpacingAccountsForAnnotationsAndMarkerName(t *testing.T) {
+func TestPowerLayoutSpacingUsesDesignatorsAndMarkerNameButExcludesValues(t *testing.T) {
 	fixture := powerLayoutFixture(t, 0, 0, 20, 3)
 	base, err := planPowerLayout(powerLayoutBytes(t, fixture), powerLayoutTestOptions())
 	if err != nil {
@@ -203,10 +214,10 @@ func TestPowerLayoutSpacingAccountsForAnnotationsAndMarkerName(t *testing.T) {
 	input, first, second := base.Placements[1], base.Placements[2], base.Placements[3]
 	markerLeft := plPin(base.Placements[0], "2").X - 4*schAnchorGrid - math.Max(markerBBoxProfile("power", "+3V3").Far, plPowerTextWidth("+3V3")/2)
 	if plPin(input, "1").X+plPowerCapRightReach(input)+bslPartGap > markerLeft {
-		t.Fatal("input value/designator text must clear the duplicate VOUT marker")
+		t.Fatal("input designator must clear the duplicate VOUT marker")
 	}
 	if plPin(first, "1").X+plPowerCapRightReach(first)+bslPartGap > second.BBox.MinX {
-		t.Fatal("output annotation column must clear the next capacitor")
+		t.Fatal("output designator column must clear the next capacitor")
 	}
 	powerLayoutTestComp(fixture, 3)["otherProperty"] = map[string]any{"Value": "1000uF / 50V"} // C2
 	powerLayoutTestComp(fixture, 2)["otherProperty"] = map[string]any{"Value": "470uF / 25V"}  // C1
@@ -214,8 +225,10 @@ func TestPowerLayoutSpacingAccountsForAnnotationsAndMarkerName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if long.Placements[1].X >= input.X || long.Placements[3].X <= second.X {
-		t.Fatal("longer component values must widen the annotation reserve")
+	for i := range base.Placements {
+		if long.Placements[i].X != base.Placements[i].X || long.Placements[i].Y != base.Placements[i].Y || long.Frames[0].Rect != base.Frames[0].Rect {
+			t.Fatalf("non-designator Value changed layout at placement %d: base=%+v long=%+v", i, base.Placements[i], long.Placements[i])
+		}
 	}
 	fixture = powerLayoutFixture(t, 0, 0, 20, 3)
 	for i := 1; i <= 4; i++ {

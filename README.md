@@ -60,7 +60,7 @@
 | 能力域 | 做什么 |
 |---|---|
 | **电路块库(旗舰特色)** | 社区共建、署名可追的**成熟外设电路库**(`easyeda blocks`,**37 块:19 ready / 13 verified / 5 draft**):CH340 USB 串口、ESP32 自动下载、按键去抖、USB-HUB、降压…`sch block-apply` **一条命令放件 + 连线 + 网表对账**,照抄拓扑、只重绑引脚网络即可复用 |
-| 原理图 | canonical 连接图 → Lib 局部几何 → `sch compose` 单页紧凑 Z 字组合 → `sch apply`;正常位号与功能 Role 分离,粉色虚线方框配 0.2 inch 标题,每框按内容独立收紧并保留最小内边距 |
+| 原理图 | 原始快照 → canonical/核心外围归属/约束 → 区内与纸张两层计算 → 固定转换/Apply → 原始数据回读；失败回源重算。[架构基准](skills/easyeda-agent/references/schematic-data.md#数据驱动架构基准) |
 | 机械门禁与审计 | 本地数据检查、Apply 后逐脚/网络/NC/几何回读;`sch gate --strict` 四阶段(layout-lint→check→bridge-check→drc);跨页网名审计 `sch nets --strict` + 块对账 `sch reconcile` |
 | PCB | 自动布局、板框、禁布区、规则感知短线布线、4 层电源平面、铺铜、丝印避让、DRC/`pcb check` |
 | 设计流程 | 从**客户口吻需求**到成品的门控主脊(S0–S6 + P0–P10),里程碑确认,存盘检查点 |
@@ -180,11 +180,13 @@ easyeda-agent-connector.eext，保存文档并完全退出、重开 EasyEDA。�
 当前 Agent 会话并新开会话，从版本检查重新开始。确认已开启“允许外部交互”，再运行
 easyeda health 核对目标工程、页面和版本。
 
-绘制原理图时先读取或建立本地 canonical connectivity JSON，以器件、完整物理引脚、
-稳定网络 ID、pin→net/NC 为权威数据；先在本地计算器件 XY、朝向、连线与功能 Lib，
-再生成 diff/Apply 队列。Apply 后逐脚回读，运行 layout-lint、check、bridge-check、DRC，
-显式保存并导出图片检查。不要直接依赖截图猜接，不修改原位号，不把 GPIO 号当器件物理
-脚号，也不要把未验证或仍有 WARN 的结果描述成通过。
+先读 Skill 的 schematic-data.md「数据驱动架构基准」。保留官方原始快照，在源数据副本
+明确 canonical 连接、核心/外围归属、参考引脚与约束；用 layout-plan --zones、
+layout-sheet-plan、layout-render 计算并验证，已确认页用 compose --layout-page 固定转换。
+问题由数据检查发现，修源数据/采集/算法后重算，不以现场逐件试摆或手改队列兜底。
+Apply 后回读器件、pin→net/NC、真实直连、位号和框/标题，逐页严格门禁并显式保存。
+位号参与遮挡/入框，型号/参数等非位号属性文字排除布局检查；截图只辅助发现规则遗漏。
+不把同网/同框、高分、缺测或未完成溯源当通过，不把 GPIO 号当物理脚号。
 ```
 
 ### 可选:MCP 接入

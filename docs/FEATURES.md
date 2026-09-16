@@ -4,6 +4,10 @@
 
 ## 当前基线
 
+- 原理图统一架构：[数据驱动架构基准](../skills/easyeda-agent/references/schematic-data.md#数据驱动架构基准)。原始快照保留，源数据驱动计算、检查和修复；不是现场逐件试摆后看图兜底。
+- 通用两层布局：`layout-plan --zones` 消费明确核心/外围归属和约束，`layout-sheet-plan` 只选择/平移完整候选；固定 `layout-render` 与 `compose --layout-page` 保留同一目标。任一区失败不能拼半成品。
+- 局部数据编辑：`sch layout-edit` 按稳定 ID 将核心及其唯一归属 zone 作为一个相对坐标系平移；刚体目标碰撞时固定核心目标并仅重算本区。单脚标签修复只沿官方引脚外向轴生成候选，并通过 daemon 作用域 action 逐对象核对、串行替换和回读；普通写线门禁不放宽。
+- 检查范围：位号参与遮挡/入框，其他器件属性文字排除页面碰撞和框包络；当前实现/安装版是否覆盖须按真实报告举证，不以规范代替验证。
 - 原理图：以 Connectivity IR（器件、引脚、网络、pin-to-net）为电气事实，布局与 Lib 模块复用不得改变连接核心。
 - 本地设计比较：`sch design-diff` 按稳定ID核对完整canonical字段与两份compose计划的图形数据，报告内容哈希和未验证范围。
 - Lib 内部计算：`sch lib-layout` 根据实测姿态/引脚与canonical网络，计算核心及串联外围的局部位置、短线和局部电源地，再输出compose源。搜索有界，不推断缺失电路或擅自旋转。
@@ -212,7 +216,8 @@ Workspace → Project → **Board** → schematic + PCB. Map to `eda.dmt_Board.*
   - **`easyeda sch autoconnect`** — pin-aware connect planner: score every
     (direction × offset) candidate against real geometry, pick the lowest cost,
     delegate the mutation to `connect_pin` (issue #24).
-  - **`easyeda sch autolayout`** — module-aware **placement** planner (issue #25):
+  - **`easyeda sch autolayout`** — legacy module-aware **placement** planner (issue #25),
+    not the current data-driven generation workflow; local maintenance must reconcile source data:
     reads a `--spec` (page, sheet, modules with zone/core/parts, rules),
     partitions the canvas into named zones (`left-top`/`center`/`right`/…), places
     each module's core IC near its zone center, fans peripherals around it with

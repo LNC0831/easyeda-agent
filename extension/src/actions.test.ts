@@ -615,6 +615,35 @@ test('components.list: includePins distinguishes empty success, unavailable data
 	}
 });
 
+test('components.list: geometry-only pin reads do not compile a netlist; wire read failures remain unknown', async (t) => {
+	const previous = (globalThis as any).eda;
+	t.after(() => { (globalThis as any).eda = previous; });
+	let netlistReads = 0;
+	let mode = 'valid';
+	(globalThis as any).eda = {
+		sch_PrimitiveComponent: {
+			getAll: async () => [mockComponent({ PrimitiveId: 'u1', ComponentType: 'part', Designator: 'U1' })],
+			getAllPinsByPrimitiveId: async () => [],
+		},
+		sch_ManufactureData: { getNetlistFile: async () => { netlistReads++; throw new Error('must not compile'); } },
+		sch_PrimitiveWire: { getAll: async () => {
+			if (mode === 'throw') throw new Error('wire channel unavailable');
+			if (mode === 'missing') return undefined;
+			if (mode === 'empty') return [];
+			return [{ getState_Line: () => mode === 'bad' ? [0, NaN, 10, 0] : [0, 0, 10, 0], getState_Net: () => 'N', getState_PrimitiveId: () => 'w1' }];
+		} },
+	};
+	for (mode of ['valid', 'empty', 'throw', 'missing', 'bad']) {
+		const res: any = await schematicComponentsList({ includePins: true, includePinNets: false, includeWires: true });
+		assert.equal(netlistReads, 0);
+		assert.equal(res.result.components[0].pinsAvailable, true);
+		assert.equal(res.result.wiresAvailable, mode === 'valid' || mode === 'empty');
+		if (mode === 'valid') assert.equal(res.result.wires[0].primitiveId, 'w1');
+		else assert.deepEqual(res.result.wires, []);
+		if (['throw', 'missing', 'bad'].includes(mode)) assert.equal(typeof res.result.wiresError, 'string');
+	}
+});
+
 test('components.list: connectivitySummary fails closed when an SDK inventory is unavailable', async () => {
 	(globalThis as any).eda = {
 		sch_PrimitiveComponent: { getAll: async () => [] },

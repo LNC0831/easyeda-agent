@@ -3,7 +3,9 @@
 When an AI agent (via `easyeda-agent`) generates or modifies a schematic, it must follow these conventions. They are derived from EE best practices plus empirical study of real LCEDA / EasyEDA Pro reference designs (see §7、§8).
 
 > **自动批量实现** 一整张网表时,这些规则的执行**次序**见 [`auto-layout-sop.md`](./auto-layout-sop.md)
-> (图纸自适应 → 主器件分区 → 辅助件就近 → 微调)——它把下面的分区/间距/去耦/朝向串成机器可执行的 SOP。
+> (源数据 → 区内求解 → 整页求解 → 固定转换/Apply → 数据回读)。
+> [数据驱动架构基准](schematic-data.md#数据驱动架构基准)优先；下文旧参考图的九宫格、
+> 距离统计和历史观察不是生成坐标或功能归属的答案，不覆盖显式 zone/attachments/spacing。
 
 > **本文导航(§)**:0 坐标系/单位 · 1 分区(Zone Map)· 2 模块间距 · 3 Wire 长度/走线约定 ·
 > 4 命名约定 · 5 Designator 前缀 · 6 去耦电容规则 · 7 真实参考 motobox2026 · 8 真实参考 ESP32S3R8N8 ·
@@ -24,7 +26,8 @@ When an AI agent (via `easyeda-agent`) generates or modifies a schematic, it mus
 
 ## 1. 分区 (Zone Map)
 
-A3 / 类 A3 图纸划成 **3×3 九宫格**——这是**理想布局**，不是硬规则。模块按功能落到指定区：
+以下九宫格是历史参考的阅读示意，不是当前自动布局算法。当前以明确核心及专属外围
+组成 zone，经数据计算按 Z 型排纸；不按型号模糊分类或公共电源猜归属，不硬套以下位置：
 
 ```
 +-----------------------+-----------------------+-----------------------+
@@ -62,7 +65,8 @@ A3 / 类 A3 图纸划成 **3×3 九宫格**——这是**理想布局**，不是
 由相同的转换器生成并通过 Apply 落图,不能靠任务结束前临时补画。
 
 - 方框用粉色虚线,标题用粉色文字,字高 **0.2 inch = 20 原理图坐标单位**。
-- 方框包络包含器件、引脚、导线、电源符号及文字的可见范围。按分项占位比较上、下空档,
+- 方框包络包含器件、引脚、导线、电源符号、位号及其他必检文字；排除非位号器件属性。
+  按分项占位比较上、下空档,
   容得下就将标题内嵌,不够才最小扩边;先最小化框高度,再比较面积,平局依次优先左对齐、顶部。
   不固定预留顶部标题带,也不缩小标题字号。
 - 先计算 XY、方向和紧凑包络,再从左上按功能 Z 字顺序排模块,各框保留内容高度、同行顶齐，按行最高框换行并整体平移；距实测图纸内边框至少10 raw。
@@ -76,6 +80,9 @@ A3 / 类 A3 图纸划成 **3×3 九宫格**——这是**理想布局**，不是
 登记模块。存在性门仍检查缺失分区框和图签,不检查 Notes 缺失。
 
 ## 2. 模块间距
+
+以下为历史样例统计，不是现行硬阈值，也不能替代统一 spacing 与真实 bbox/引脚避碰。
+不得以统计距离强行拉远专属外围或扩大 zone；实际求解遵守数据手册中的约束。
 
 > Goal：既不松散（图纸利用率低）也不拥挤（线路相互干扰）。
 
@@ -128,7 +135,7 @@ buffer:
 | pin → 共享网络 net label（信号） | 10–90 (median 30, p90 85) | 朝标签方向 |
 | pin → 同行邻 pin（IC pin-to-pin 直连） | 80–100 | 直线，y 共线 |
 | pin → 去耦电容 | 10–20 | 极短，越紧越好 |
-| 任意 wire 段 > 100 | **软警告**——优先改用 net label（见 §3.2） | |
+| 任意 wire 段 > 100 | 紧凑性诊断，回源优化几何；不得因此拆开必需的直连线树 | |
 
 > 实测分布 (ESP32 reference，151 个非零 segment)：median 30、p90 90、p95 100、p99 195、max 215。信号段在 10 (短跳) 和 85 (IC pin → 邻 label) 两处出现明显聚类——这些都是结构性长度，不要强压到 20–60。
 
@@ -137,15 +144,16 @@ buffer:
 - **所有 wire 走水平或竖直**，不出现斜线（45°、任意角度均不允许）
 - 拐弯用**一段水平 + 一段竖直**两段 wire（或单 wire 多 endpoint：`[x1,y1, x2,y1, x2,y2]`）
 - 不允许"T 形" 三线交点未显式标 junction
-- 长 wire 拐两次以上 **或** 单段 > 100 units → 改用 net label 代替（同名 label 表示同一网络，避免视觉缠绕）
+- 长线/多折点先修源约束并重算；只有已声明的跨模块/跨页边界可使用端口。
+  `direct` 和原直连引脚组不得因线长而改为同名标签岛。
 
 ### 3.3 电源/接地特殊约定
 
 | | 方向 | 推荐长度 | netflag kind |
 |---|---|---|---|
-| `+3V3` / `3V3` / `+5V` / `VBAT` / `VDD_*` | netflag 朝**上** (rotation 0 或 90) | pin → netflag 20–40 | `power` |
-| `GND` / `AGND` | netflag 朝**下** (rotation 180 或 270) | pin → netflag 10–40 | `ground` |
-| `IN/OUT` 端口 | 朝外侧 (rotation 0/180) | pin → netflag 20–60 | `net_port_in/out/bi` |
+| `+3V3` / `3V3` / `+5V` / `VBAT` / `VDD_*` | 优先向上出线，stored rotation 按 §3.5 校准表 | pin → netflag 20–40 | `power` |
+| `GND` / `AGND` | 优先向下出线，stored rotation 按 §3.5 校准表 | pin → netflag 10–40 | `ground` |
+| `IN/OUT` 端口 | 向外出线，朝向按真实引脚/标记几何 | pin → netflag 20–60 | `net_port_in/out/bi` |
 
 电源/地的 netflag **绝不**与 pin 同坐标——必须用 wire 引出一段（即使只有 10 units 也行）。
 
@@ -159,7 +167,7 @@ buffer:
 - 连接树采用无环最小森林：候选边按线长、拐点和障碍惩罚排序，禁止跨页大环、长距离
   环绕母线和为了“看起来同网”重复画线。一个网络可以有多个局部树，只要它们都通过
   同名全局符号或明确的模块端口归并。
-- 普通信号也先尝试模块内直连；只有跨模块、跨页或长距离才使用 netport/netlabel。
+- 普通信号也先尝试模块内直连；只有明确的跨模块/跨页策略才使用 netport/netlabel。
   标签是边界表达，不是外围电路的替代导线。
 - Apply 的最小验收集固定为 `sch read`、`sch check`、`sch bridge-check`、DRC；任何
   wire-crossing、multi-net-wire、dangling-wire、orphan-stub 或拓扑变化都阻止后续队列。
@@ -245,7 +253,9 @@ EasyEDA 默认 lineWidth = 1。约定：
 
 LED 也可用 `LED1` 这种语义化命名（兼容 `D1`），EasyEDA 不强制 `D` 前缀。
 
-**对参考设计中的语义化 designator 宽容处理**：EasyEDA / Espressif 的 reference 经常出现 `PWR`（电源指示 LED）、`BOOT` / `RST`（用户按键）这种「一眼能看出用途」的命名。**导入时容忍保留**；但 **agent 自动生成新元件时仍按 §5 前缀**（按键 → `SW1` / `K1`、LED → `LED1` / `D1`）。
+读取历史参考时保留原始 `PWR/BOOT/RST` 等命名作为证据；进入目标重建前用
+`sch designators` 按官方库前缀修复非标准位号，功能名存 role，稳定 ID 不变。
+本表仅举例，不能覆盖真实库前缀或改写已有合法位号。
 
 ## 6. 去耦电容 (decoupling) 规则
 
@@ -262,7 +272,8 @@ LED 也可用 `LED1` 这种语义化命名（兼容 `D1`），EasyEDA 不强制 
 - 模块电流 > 50 mA 时并联 **10 μF 钽 / 陶**（低频 / 储能），按 IC 而非按 pin 配置即可。
 - 多 VCC pin 的大芯片（ESP32-S3 有 VDDA×2 + VDD3P3_CPU + VDD_SPI + VDD3P3_RTC + VDD3P3×2 = 7 路）：**每路一只 0.1 μF**——实测 §8 reference 只配齐了 2 个，属于**已知欠去耦**。
 
-由 Skill 自动布线时，去耦电容应在元件 `place` 后立刻 place 在其 VCC pin 旁，按上表分级选择目标距离。
+去耦需求首先按具体器件手册写入源连接与核心/外围归属，再由算法随核心求解；
+不在现场 place 核心后临时补电容。以上数值是历史经验，不替代具体器件的典型电路。
 
 > 阈值依据：ESP32 reference 9 个 big-IC VCC pin 的最近 cap 距离排序为 `[30, 50, 95, 105, 105, 165, 200, 215, 225]`，median 105。旧规则「≤30 units」对应 11% 达成率，明显不合实际；新分级让一般数字电源 SHOULD（≤60）达成率提升到 22%，MUST（≤120）覆盖 56%，同时保留高速 pin 的严格要求。
 
@@ -323,22 +334,18 @@ LED 也可用 `LED1` 这种语义化命名（兼容 `D1`），EasyEDA 不强制 
 
 ## 9. 自动化布局的执行步骤
 
-当 Skill / Agent 自动放元件时：
-
-1. **分类 + 簇面积评估**：每个待放元件按 `symbolName` / `Manufacturer Part` 模糊匹配到分类 → 落到 §1 九宫格的某区。**同时累加每个功能簇的 bbox 总面积**——最大簇（如 ESP32+RF+decap+天线）**优先分配它需要的板边**（RF → 板边角落），再把 3×3 套到剩余空间。MCU 是否含 RF 决定它走 MC 还是走角落。
-2. **排序**：同区内按"上游 → 下游"信号流向排（电源链：输入 → 转换 → 输出；信号链：sensor → MCU → 外设）。电源链选定**一根轴**（纵向 TL→ML→BL 或横向 TL→TC→TR），不要两者混排。
-3. **下笔**：从区中心格点开始，按 §2 间距规则放邻居。优先填 x 方向，超过区宽就换 y。
-4. **布线**：每个 pin 用 §3 短桩规则引出。电源 pin → netflag (power, 朝上)，地 pin → netflag (ground, 朝下)。**禁止 emit 零长 wire**。
-5. **去耦**：每个 IC 的 VCC pin 按 §6 分级阈值 place 0.1 μF——高速 / RF / ADC 走 SHOULD ≤30，一般数字电源走 SHOULD ≤60 / MUST ≤120。
-6. **验证**：逐页跑 `sch layout-lint --strict`、`sch drc`、`sch check --strict`、
-   `sch bridge-check`，再用 `sch read` 对照设计 spec 或改动前 pin→net 黄金表；任何一门失败都回到对应步骤修复。
+统一按 [auto-layout-sop.md](auto-layout-sop.md) 执行：保留原始数据，明确核心/外围所有权与
+绘制策略，区内完整求解后整页计算，固定转换并 Apply，再做数据对账、严格检查与保存。
+不按本节旧版“模糊分类 → 九宫格现场摆件 → 逐脚标记”执行。
+发现问题回改源输入、测量或算法再重算；导图发现的漏检须补机器规则和回归。
 
 ## 10. 边界与开放问题
 
 - 这是 **schematic** 约定，不是 PCB 约定。PCB layout 另有独立约定（trace 宽度、layer 用途、impedance）。
-- 对超大模块（pin > 100），九宫格容纳能力有限，可能要分多页（用 `schematic.pages.list` + `schematic.page.open`）。
+- 模块容量以真实几何、纸张约束和求解结果判断，不能只按引脚数推断；分页迁移完整功能区。
 - 多页之间通过 `net_port` (`createNetPort('IN/OUT/BI')`) 在页间建立电气连接，net 名称相同视为同网。
-- `getCurrentRenderedAreaImage` **实测不可靠**：在后台标签 / 某些状态下它返回的是**缓存的旧渲染**——既不跟随 `zoomToSelectedPrimitives` / `zoomToRegion`，也可能不反映刚做的增删（实测：两次不同板面状态下截图逐字节相同、md5 一致）。用它做"改完截图确认"前，务必先确认它真的刷新了（例如截图前后做一处明显改动并比对像素）；否则改用纯数据校验（如 schematic-lint）或直接肉眼看 EasyEDA 界面。
+- `getCurrentRenderedAreaImage` 在后台可能返回旧缓存。验收始终读取原始数据，
+  展示用 `sch export-image`；不要为了检查截图刷新而修改电路，也不要以肉眼观察替代数据检查。
 - ⚠️ **`schematic.page.rename` 改完立即 `doc ls` 会读到旧页名（issue #55）**：`modifySchematicPageName` 返回 `ok:true` 后，新名字**不会立刻**写进 `getAllSchematicPagesInfo()`（`schematic.pages.list` / `doc ls` 的数据源）——平台的页面元数据缓存要等某个**后续写操作**触发才刷新（`sch clear` 等任意无关动作会"顺便"刷到，造成"看似延迟生效"）。同属 `createNetFlag` 立即回显那一类平台异步陷阱。**连接器已内建写后自校验**：`page.rename` 成功后会短间隔重试读回 `getAllSchematicPagesInfo()` 确认新名生效，命中返回 `verified:true`；重试耗尽仍未同步返回 `verified:false` + `warning`。**确认重命名真的生效的可靠做法 = 看返回值的 `verified` 字段**（而不是紧接着 `doc ls`）；若拿到 `verified:false`，稍后重试或触发任意写操作后再 `doc ls`。
 - 目前两份 reference（§7 motobox、§8 ESP32S3R8N8）覆盖了「贴近 3×3 理想」与「RF MCU 占角 + 横向电源链」两种典型。若再采集到第三种（例如纯模拟前端、或多电源域工控板），应继续补充以避免 agent 过拟合到单一案例。
 

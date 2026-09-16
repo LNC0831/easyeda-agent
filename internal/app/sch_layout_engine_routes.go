@@ -2,10 +2,28 @@ package app
 
 import (
 	"fmt"
+	"github.com/zhoushoujianwork/easyeda-agent/internal/schguard"
 	"math"
+	"sort"
 )
 
 func libPinSide(p powerLayoutPin, b layoutBBox) (string, error) {
+	if p.Rotation != nil {
+		x, y, ok := schguard.CardinalOutward(*p.Rotation)
+		if !ok {
+			return "", fmt.Errorf("pin %s has invalid measured outward rotation", p.Number)
+		}
+		switch {
+		case x > 0:
+			return "right", nil
+		case x < 0:
+			return "left", nil
+		case y > 0:
+			return "up", nil
+		default:
+			return "down", nil
+		}
+	}
 	var found []string
 	for _, d := range []string{"left", "right", "up", "down"} {
 		if schTerminalPointsOutward(p, b, d) {
@@ -17,6 +35,105 @@ func libPinSide(p powerLayoutPin, b layoutBBox) (string, error) {
 	}
 	return found[0], nil
 }
+
+func libPinOutwardRotation(p powerLayoutPin, b layoutBBox) (float64, error) {
+	side, err := libPinSide(p, b)
+	if err != nil {
+		return 0, err
+	}
+	return map[string]float64{"right": 0, "up": 90, "left": 180, "down": 270}[side], nil
+}
+
+func libRouteRotation(q powerLayoutPin, plans []*powerLayoutPlan) (float64, bool) {
+	if q.Rotation != nil {
+		_, _, ok := schguard.CardinalOutward(*q.Rotation)
+		return *q.Rotation, ok
+	}
+	for _, p := range plans {
+		if p == nil {
+			continue
+		}
+		for _, c := range p.Placements {
+			for _, pin := range c.Pins {
+				if pin.Number == q.Number && pin.X == q.X && pin.Y == q.Y {
+					r, e := libPinOutwardRotation(pin, c.BBox)
+					return r, e == nil
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
+func libRouteOutward(route []powerLayoutWire, a, b powerLayoutPin, ar, br float64, ak, bk bool) bool {
+	for _, w := range route {
+		for i := 1; i < len(w.Points); i++ {
+			for _, q := range []struct {
+				p     powerLayoutPin
+				r     float64
+				known bool
+			}{{a, ar, ak}, {b, br, bk}} {
+				if !q.known || !plOnSegment([2]float64{q.p.X, q.p.Y}, w.Points[i-1], w.Points[i]) {
+					continue
+				}
+				for _, e := range [][2]float64{w.Points[i-1], w.Points[i]} {
+					if e == [2]float64{q.p.X, q.p.Y} {
+						continue
+					}
+					if !schguard.PinRayOutward(q.r, schguard.Point{X: q.p.X, Y: q.p.Y}, schguard.Point{X: e[0], Y: e[1]}) {
+						return false
+					}
+				}
+			}
+		}
+	}
+	return true
+}
+
+func libPointsRoute(net string, points ...[2]float64) []powerLayoutWire {
+	points = plNormalizeWirePoints(points)
+	var route []powerLayoutWire
+	for i := 1; i < len(points); i++ {
+		if points[i-1] != points[i] {
+			route = append(route, powerLayoutWire{Net: net, Points: [][2]float64{points[i-1], points[i]}})
+		}
+	}
+	return route
+}
+
+// Both endpoints first escape along their OWN outward axes; only the free
+// corridor bends. This admits same-facing and perpendicular pins without using
+// illegal sideways stubs. Fixed bounded lengths keep candidate work finite.
+func libEscapeRoutes(a, b powerLayoutPin, ar, br float64, steps []float64) [][]powerLayoutWire {
+	ax, ay, _ := schguard.CardinalOutward(ar)
+	bx, by, _ := schguard.CardinalOutward(br)
+	s, t := [2]float64{a.X, a.Y}, [2]float64{b.X, b.Y}
+	var routes [][]powerLayoutWire
+	for _, d := range steps {
+		x, y := [2]float64{a.X + ax*d, a.Y + ay*d}, [2]float64{b.X + bx*d, b.Y + by*d}
+		for _, bend := range [][2]float64{{x[0], y[1]}, {y[0], x[1]}} {
+			r := libPointsRoute(a.Net, s, x, bend, y, t)
+			if libRouteOutward(r, a, b, ar, br, true, true) {
+				routes = append(routes, r)
+			}
+		}
+		// Oppositely facing-away pins need a free middle corridor; either
+		// one-bend middle route otherwise passes through the OTHER pin again.
+		for _, cy := range []float64{plFloor((a.Y + b.Y) / 2), math.Max(a.Y, b.Y) + d, math.Min(a.Y, b.Y) - d} {
+			r := libPointsRoute(a.Net, s, x, [2]float64{x[0], cy}, [2]float64{y[0], cy}, y, t)
+			if libRouteOutward(r, a, b, ar, br, true, true) {
+				routes = append(routes, r)
+			}
+		}
+		for _, cx := range []float64{plFloor((a.X + b.X) / 2), math.Max(a.X, b.X) + d, math.Min(a.X, b.X) - d} {
+			r := libPointsRoute(a.Net, s, x, [2]float64{cx, x[1]}, [2]float64{cx, y[1]}, y, t)
+			if libRouteOutward(r, a, b, ar, br, true, true) {
+				routes = append(routes, r)
+			}
+		}
+	}
+	return routes
+}
 func libPin(c powerLayoutPlacement, n string) (powerLayoutPin, bool) {
 	for _, p := range c.Pins {
 		if p.Number == n {
@@ -27,7 +144,7 @@ func libPin(c powerLayoutPlacement, n string) (powerLayoutPin, bool) {
 }
 
 // Bounded route alternatives: straight, then the two one-bend Manhattan paths.
-func libRoutes(a, b powerLayoutPin) [][]powerLayoutWire {
+func libRoutes(a, b powerLayoutPin, plans ...*powerLayoutPlan) [][]powerLayoutWire {
 	if a.Net == "" || a.Net != b.Net {
 		return nil
 	}
@@ -36,15 +153,29 @@ func libRoutes(a, b powerLayoutPin) [][]powerLayoutWire {
 	}
 	wire := func(x, y [2]float64) powerLayoutWire { return powerLayoutWire{Net: a.Net, Points: [][2]float64{x, y}} }
 	s, t := [2]float64{a.X, a.Y}, [2]float64{b.X, b.Y}
+	var routes [][]powerLayoutWire
 	if a.X == b.X || a.Y == b.Y {
-		return [][]powerLayoutWire{{wire(s, t)}}
+		routes = append(routes, []powerLayoutWire{wire(s, t)})
+	} else {
+		m1, m2 := [2]float64{b.X, a.Y}, [2]float64{a.X, b.Y}
+		routes = append(routes, []powerLayoutWire{wire(s, m1), wire(m1, t)}, []powerLayoutWire{wire(s, m2), wire(m2, t)})
 	}
-	m1, m2 := [2]float64{b.X, a.Y}, [2]float64{a.X, b.Y}
-	return [][]powerLayoutWire{{wire(s, m1), wire(m1, t)}, {wire(s, m2), wire(m2, t)}}
+	ar, ak := libRouteRotation(a, plans)
+	br, bk := libRouteRotation(b, plans)
+	var valid [][]powerLayoutWire
+	for _, r := range routes {
+		if libRouteOutward(r, a, b, ar, br, ak, bk) {
+			valid = append(valid, r)
+		}
+	}
+	if ak && bk {
+		valid = append(valid, libEscapeRoutes(a, b, ar, br, []float64{5, 10, 20})...)
+	}
+	return valid
 }
 
 // Bounded two-bend alternatives; the full geometry validator rejects inward paths.
-func libDetourRoutes(a, b powerLayoutPin) [][]powerLayoutWire {
+func libDetourRoutes(a, b powerLayoutPin, plans ...*powerLayoutPlan) [][]powerLayoutWire {
 	if a.Net == "" || a.Net != b.Net || (a.X == b.X && a.Y == b.Y) {
 		return nil
 	}
@@ -67,7 +198,18 @@ func libDetourRoutes(a, b powerLayoutPin) [][]powerLayoutWire {
 			add(s, [2]float64{a.X, y}, [2]float64{b.X, y}, t)
 		}
 	}
-	return routes
+	ar, ak := libRouteRotation(a, plans)
+	br, bk := libRouteRotation(b, plans)
+	var valid [][]powerLayoutWire
+	for _, r := range routes {
+		if libRouteOutward(r, a, b, ar, br, ak, bk) {
+			valid = append(valid, r)
+		}
+	}
+	if ak && bk {
+		valid = append(valid, libEscapeRoutes(a, b, ar, br, []float64{25, 30, 40, 50, 60, 80})...)
+	}
+	return valid
 }
 
 // Marker leads may branch off the already connected same-net tree.
@@ -103,7 +245,7 @@ func libPlaceMarker(p *powerLayoutPlan, q powerLayoutPin, kind string, budget ..
 		directions = []string{"up", side, "left", "right", "down"}
 	}
 	cap := libMarkerOffsetCap(p, q.Net, kind)
-	if libPlaceMarkerAt(p, q, kind, directions, cap, budget...) {
+	if libPlaceMarkerAt(p, q, kind, []string{side}, cap, budget...) {
 		return true
 	}
 	// A straight lead can be trapped by an adjacent pin's marker. Escape
@@ -216,20 +358,17 @@ func libMarkerRetraces(f powerLayoutFlag, segments []powerLayoutWire) bool {
 	return false
 }
 
-// Symmetric taps only on a proved straight connection between two facing
-// two-terminal devices. It neither invents net membership nor extends the wire.
-func libFacingTwoTerminalPins(p *powerLayoutPlan, a, b powerLayoutPin) bool {
+// Report whether two real pins face one another on the same axis. Symbol pin
+// count is intentionally irrelevant: future tree branching is a net property.
+func libFacingPins(p *powerLayoutPlan, a, b powerLayoutPin) bool {
 	var ac, bc *powerLayoutPlacement
 	for i := range p.Placements {
 		c := &p.Placements[i]
-		if len(c.Pins) != 2 {
-			continue
-		}
 		for _, q := range c.Pins {
-			if q == a {
+			if libSamePhysicalPin(q, a) {
 				ac = c
 			}
-			if q == b {
+			if libSamePhysicalPin(q, b) {
 				bc = c
 			}
 		}
@@ -240,6 +379,18 @@ func libFacingTwoTerminalPins(p *powerLayoutPlan, a, b powerLayoutPin) bool {
 	as, _ := libPinSide(a, ac.BBox)
 	bs, _ := libPinSide(b, bc.BBox)
 	return (a.X == b.X && ((a.Y < b.Y && as == "up" && bs == "down") || (a.Y > b.Y && as == "down" && bs == "up"))) || (a.Y == b.Y && ((a.X < b.X && as == "right" && bs == "left") || (a.X > b.X && as == "left" && bs == "right")))
+}
+
+func libPlanNetPinCount(p *powerLayoutPlan, net string) int {
+	count := 0
+	for _, component := range p.Placements {
+		for _, pin := range component.Pins {
+			if pin.Net == net {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func libPlaceMidpointMarker(p *powerLayoutPlan, island libIsland, kind string, budget ...*int) bool {
@@ -301,9 +452,120 @@ func libPlaceMidpointMarker(p *powerLayoutPlan, island libIsland, kind string, b
 	return false
 }
 
+type libWireTreeMarkerCandidate struct {
+	point      [2]float64
+	directions []string
+	rank       int
+}
+
+// libPlaceWireTreeMarker names an already-connected physical island from its
+// real wire geometry. It deliberately considers only net ports: local power
+// and ground keep their symbol-specific marker semantics. A perpendicular lead
+// may start at a segment midpoint, endpoint, or existing T/contact node, but it
+// must still pass libMarkerRetraces, schTerminalCandidate, and the complete
+// geometry validator in libPlaceMarkerAt.
+func libPlaceWireTreeMarker(p *powerLayoutPlan, island libIsland, kind string, budget ...*int) bool {
+	if !isNetPortKind(kind) || len(island.wireIndices) == 0 {
+		return false
+	}
+	contacts := libWireContactNodes(p.Wires)
+	candidates := map[[2]float64]*libWireTreeMarkerCandidate{}
+	add := func(point [2]float64, directions []string, rank int) {
+		if !plGrid(point[0]) || !plGrid(point[1]) {
+			return
+		}
+		candidate, ok := candidates[point]
+		if !ok {
+			candidate = &libWireTreeMarkerCandidate{point: point, rank: rank}
+			candidates[point] = candidate
+		}
+		if rank < candidate.rank {
+			candidate.rank = rank
+		}
+		seen := map[string]bool{}
+		for _, direction := range candidate.directions {
+			seen[direction] = true
+		}
+		for _, direction := range directions {
+			if !seen[direction] {
+				candidate.directions = append(candidate.directions, direction)
+				seen[direction] = true
+			}
+		}
+	}
+	for _, index := range island.wireIndices {
+		if index < 0 || index >= len(p.Wires) {
+			continue
+		}
+		wire := p.Wires[index]
+		if wire.Net != island.net || len(wire.Points) != 2 {
+			continue
+		}
+		a, b := wire.Points[0], wire.Points[1]
+		var directions []string
+		switch {
+		case a[1] == b[1] && a[0] != b[0]:
+			directions = []string{"up", "down"}
+		case a[0] == b[0] && a[1] != b[1]:
+			directions = []string{"right", "left"}
+		default:
+			continue
+		}
+		// Prefer the vacant middle of a segment, then established electrical
+		// junctions, then bends/endpoints. All are exact points on this island;
+		// map merging preserves both perpendicular choices at bends.
+		add([2]float64{(a[0] + b[0]) / 2, (a[1] + b[1]) / 2}, directions, 0)
+		for point := range contacts {
+			if plOnSegment(point, a, b) {
+				add(point, directions, 1)
+			}
+		}
+		add(a, directions, 2)
+		add(b, directions, 2)
+	}
+	ordered := make([]libWireTreeMarkerCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		ordered = append(ordered, *candidate)
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].rank != ordered[j].rank {
+			return ordered[i].rank < ordered[j].rank
+		}
+		if ordered[i].point[1] != ordered[j].point[1] {
+			return ordered[i].point[1] > ordered[j].point[1]
+		}
+		return ordered[i].point[0] < ordered[j].point[0]
+	})
+	cap := libMarkerOffsetCap(p, island.net, kind)
+	for _, candidate := range ordered {
+		q := powerLayoutPin{Net: island.net, X: candidate.point[0], Y: candidate.point[1]}
+		if libPlaceMarkerAt(p, q, kind, candidate.directions, cap, budget...) {
+			return true
+		}
+	}
+	return false
+}
+
 // Merge same-net collinear intervals, including a new segment that bridges two
 // old ones. Rebuild slices so searching a candidate cannot mutate its parent.
 func libAppendRoute(existing, route []powerLayoutWire) []powerLayoutWire {
+	return libAppendRouteWithNodes(existing, route, libWireContactNodes(existing))
+}
+
+// existingNodes is computed once for a fixed placement-search parent. Only
+// contacts involving the candidate route are incremental; this preserves the
+// exact T/endpoint evidence of libWireContactNodes without rescanning the fixed
+// existing forest for every XY proposal.
+func libAppendRouteWithNodes(existing, route []powerLayoutWire, existingNodes map[[2]float64]bool) []powerLayoutWire {
+	// An independently authored segment endpoint at a crossing is a real
+	// contact, including an invalid foreign-net one. Never erase that evidence
+	// while collapsing collinear geometry before the validator sees it.
+	nodes := make(map[[2]float64]bool, len(existingNodes))
+	for point := range existingNodes {
+		nodes[point] = true
+	}
+	libAddWireContactNodes(nodes, route, existing)
+	libAddWireContactNodes(nodes, route, route)
 	out := make([]powerLayoutWire, len(existing))
 	for i, w := range existing {
 		out[i] = w
@@ -341,5 +603,94 @@ func libAppendRoute(existing, route []powerLayoutWire) []powerLayoutWire {
 		}
 		out = append(out, w)
 	}
-	return out
+	// Collinear union removes redundant positive-length overlaps, then restores
+	// the original real contact vertices. Thus merging cannot silently turn a
+	// true X junction (or a foreign-net T short) into a noncontact crossing.
+	var split []powerLayoutWire
+	for _, w := range out {
+		if len(w.Points) != 2 {
+			split = append(split, w)
+			continue
+		}
+		a, b := w.Points[0], w.Points[1]
+		points := [][2]float64{a, b}
+		for p := range nodes {
+			if !plOnSegment(p, a, b) {
+				continue
+			}
+			duplicate := false
+			for _, q := range points {
+				if math.Abs(p[0]-q[0]) <= 1e-6 && math.Abs(p[1]-q[1]) <= 1e-6 {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate {
+				points = append(points, p)
+			}
+		}
+		axis := 0
+		if a[0] == b[0] {
+			axis = 1
+		}
+		sort.Slice(points, func(i, j int) bool {
+			if a[axis] < b[axis] {
+				return points[i][axis] < points[j][axis]
+			}
+			return points[i][axis] > points[j][axis]
+		})
+		for i := 1; i < len(points); i++ {
+			split = append(split, powerLayoutWire{Net: w.Net, Points: [][2]float64{points[i-1], points[i]}})
+		}
+	}
+	return split
+}
+
+func libAddWireContactNodes(nodes map[[2]float64]bool, aWires, bWires []powerLayoutWire) {
+	for _, aWire := range aWires {
+		for ai := 1; ai < len(aWire.Points); ai++ {
+			a, b := aWire.Points[ai-1], aWire.Points[ai]
+			for _, bWire := range bWires {
+				for bi := 1; bi < len(bWire.Points); bi++ {
+					c, d := bWire.Points[bi-1], bWire.Points[bi]
+					if (b[0]-a[0])*(d[1]-c[1]) == (b[1]-a[1])*(d[0]-c[0]) {
+						continue
+					}
+					for _, point := range [][2]float64{a, b} {
+						if plOnSegment(point, c, d) {
+							nodes[point] = true
+						}
+					}
+					for _, point := range [][2]float64{c, d} {
+						if plOnSegment(point, a, b) {
+							nodes[point] = true
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func libWireContactNodes(wires []powerLayoutWire) map[[2]float64]bool {
+	nodes := map[[2]float64]bool{}
+	for _, w := range wires {
+		for i := 1; i < len(w.Points); i++ {
+			a, b := w.Points[i-1], w.Points[i]
+			for _, v := range wires {
+				for j := 1; j < len(v.Points); j++ {
+					c, d := v.Points[j-1], v.Points[j]
+					if (b[0]-a[0])*(d[1]-c[1]) == (b[1]-a[1])*(d[0]-c[0]) {
+						continue
+					}
+					for _, p := range [][2]float64{a, b} {
+						if plOnSegment(p, c, d) {
+							nodes[p] = true
+						}
+					}
+				}
+			}
+		}
+	}
+	return nodes
 }

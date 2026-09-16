@@ -5,7 +5,7 @@ license: MIT
 compatibility: "Requires the local easyeda CLI/daemon and EasyEDA Agent Connector with Allow external interaction enabled. Python 3 is used by bundled helpers; online library lookup and updates need network access."
 metadata:
   author: zhoushoujianwork
-  version: "1.5.0"
+  version: "1.5.0-dev.9"
   homepage: "https://github.com/zhoushoujianwork/easyeda-agent"
 ---
 
@@ -70,6 +70,12 @@ EasyEDA。纯 patch 更新不升级 Connector，也不要求重开 EasyEDA。不
 
 ## 1.4 原理图主流程
 
+原理图设计、布局、检查和修复先读并遵守
+[数据驱动架构基准](references/schematic-data.md#数据驱动架构基准)：保留原始快照，
+在源数据副本表达连接、核心/外围所有权及约束，由算法生成、数据检查发现问题，再回改
+源数据或算法重算。不得以现场逐件试摆、手改队列或截图兜底替代闭环。
+同框/同网不证明外围跟随；必检项缺测或没有源到现场的可追溯证据时，不得报告完整通过。
+
 逐芯片分区：每个独立功能核心及其专属外围独立 zone；普通数据不必注册为 Lib。
 `sch layout-plan --zones` 离线计算显式分区；已确认的纸张页用 `compose --layout-page`
 保留整套选中几何、框与位置，再生成受保护队列，不重新排版；
@@ -131,6 +137,12 @@ EasyEDA。纯 patch 更新不升级 Connector，也不要求重开 EasyEDA。不
 原同一导线岛内的引脚不得退化为同名标签分离；碰撞、命名和直连保持都须逐候选通过。
 优化耗尽保留合法方案；旋转须逐引脚核对，不能只改变 rotation 字段。详细契约见 schematic-data。
 
+已有目标页的核心移动或单脚标签修复使用 `sch layout-edit`：它读取同源 zones、已选页面和
+新鲜页面快照，只生成目标页及受保护 playbook，不直接写页面。核心移动把所属区作为一次
+刚体平移；与固定区冲突时固定核心目标并从源数据重算该区候选。引脚锚定标签必须沿官方
+外向方向直出；公共线树标签须显式声明 `wire_tree` 锚定。局部 repair Apply 只允许目标
+错误消失、范围外旧 finding 与对象逐条不变；普通写线的整页几何门不因此放宽。
+
 ## 执行与验证约束
 
 - typed action 已有对应能力时使用它；无对应能力且用户接受调试路径时，才用 `debug.exec_js`。
@@ -152,6 +164,13 @@ EasyEDA。纯 patch 更新不升级 Connector，也不要求重开 EasyEDA。不
 
 ## 验证交付
 
+原理图布局验收必须包含**现场 zone 框**：运行每页 `sch gate --strict`，检查实际框间
+重叠（含旧框、重复框与包含），用原始几何数据检查标题、位号、内容出框和图纸边界。
+规划器零碰撞、器件零 overlap、官方 DRC 通过均不能单独代替这条基准。
+现场必检几何读取失败或位号/标题等必检文字越界时，明确标记布局未通过；非位号属性排除。
+官方导图仅辅助发现采集或规则遗漏，遗漏须转为数据回归。旧框清理必须逐 ID 核实，不能
+按图元类型清空全部用户图形。具体规则见 references/schematic.md。
+
 本地预览使用固定 `sch layout-render --from render.json --out layout.svg`，不再临时生成
 绘图脚本。当前只输出布局图，不打印差异图解；输入和能力边界见 schematic-data.md。
 默认出图/合页拒绝 blocked 或未接到命名线树的区域；`--diagnostic` 仅用于排查失败，
@@ -161,6 +180,10 @@ EasyEDA。纯 patch 更新不升级 Connector，也不要求重开 EasyEDA。不
 `layout-lint` 检查几何，pin→net 黄金表检查接对与否，`sch gate --strict` 汇总原理图门禁。
 官方 DRC 可能只返回聚合数；INFO/WARN 应单列，不能把“0 fatal”称为全部通过。
 `layout-score` 的逐维结果、`skipped/degraded` 是诊断，不代替硬门。
+任一维缺测时综合结论必须为 `incomplete`，显式 `--min-score` 也不能放行。
+自由文字碰撞/跨分区框由 `check` 检查；器件分区边界要求包住本体和位号，
+型号/参数等非位号属性文字不参与碰撞或入框判定，不据此扩框或阻断验收。
+位号需逐器件读取真实 bbox，缺测不能放行；具体覆盖边界见 schematic.md。
 
 用 `sch export-image` 生成官方导图辅助确认文字与可读性；原生视口截图可能未刷新。
 PCB 制造交付还须确认层叠、GND、电源、丝印与导出文件。离线单元测试或一个图页验证，

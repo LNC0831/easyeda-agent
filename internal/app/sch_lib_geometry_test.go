@@ -82,7 +82,7 @@ func TestLibGeometryMarkerExternalTextAvoidsStem(t *testing.T) {
 
 func TestLibGeometryReservesOtherComponentLabelSpace(t *testing.T) {
 	p := &powerLayoutPlan{Placements: []powerLayoutPlacement{
-		{Designator: "U1", Value: "LONG-VALUE", BBox: layoutBBox{-20, -20, 20, 20}},
+		{Designator: "U123456", Value: "short", BBox: layoutBBox{-20, -20, 20, 20}},
 		{Designator: "R1", X: 55, BBox: layoutBBox{45, -10, 65, 10}},
 	}}
 	if err := validatePowerLayout(p, layoutBBox{-1000, -1000, 1000, 1000}); err != nil {
@@ -90,6 +90,22 @@ func TestLibGeometryReservesOtherComponentLabelSpace(t *testing.T) {
 	}
 	if err := validateLibGeometry(p); err == nil || !strings.Contains(err.Error(), "label reservation") {
 		t.Fatalf("missing conservative label reservation: %v", err)
+	}
+}
+
+func TestLibGeometryExcludesNonDesignatorValueFromReservation(t *testing.T) {
+	base := powerLayoutPlacement{Designator: "U1", BBox: layoutBBox{-20, -20, 20, 20}}
+	long := base
+	long.Value = "S8050 J3Y(RANGE:200-350) / SUPPLIER-DESCRIPTION-THAT-CROSSES-THE-PAGE"
+	if got, want := libPartLabelReservation(long), libPartLabelReservation(base); got != want {
+		t.Fatalf("non-designator Value changed reservation: got %+v want %+v", got, want)
+	}
+	p := &powerLayoutPlan{Placements: []powerLayoutPlacement{
+		long,
+		{Designator: "R1", X: 80, BBox: layoutBBox{70, -10, 90, 10}},
+	}}
+	if err := validateLibGeometry(p); err != nil {
+		t.Fatalf("non-designator Value became a collision obstacle: %v", err)
 	}
 }
 
@@ -129,6 +145,17 @@ func libGeometryRealPowerFixture() *powerLayoutPlan {
 
 func TestLibGeometryAcceptsRealAMS1117VerticalShunts(t *testing.T) {
 	p := libGeometryRealPowerFixture()
+	if err := validateLibGeometry(p); err == nil || !strings.Contains(err.Error(), "pin-exit-direction") {
+		t.Fatalf("historical sideways capacitor fanout must now fail: %v", err)
+	}
+	// Preserve the measured placement; repair source wires to outward stubs
+	// and a rail one grid step above the capacitor endpoints.
+	p.Wires = append(p.Wires[3:], []powerLayoutWire{
+		{Net: "+5V", Points: [][2]float64{{145, 660}, {145, 665}}}, {Net: "+5V", Points: [][2]float64{{145, 665}, {250, 665}}}, {Net: "+5V", Points: [][2]float64{{250, 665}, {250, 660}}}, {Net: "+5V", Points: [][2]float64{{250, 660}, {255, 660}}},
+		{Net: "+3V3", Points: [][2]float64{{345, 650}, {350, 650}}}, {Net: "+3V3", Points: [][2]float64{{350, 650}, {350, 655}}}, {Net: "+3V3", Points: [][2]float64{{350, 655}, {490, 655}}}, {Net: "+3V3", Points: [][2]float64{{405, 655}, {405, 650}}}, {Net: "+3V3", Points: [][2]float64{{490, 655}, {490, 650}}},
+	}...)
+	p.Flags[0].PinY += 5
+	p.Flags[1].PinY += 5
 	if err := validateLibGeometry(p); err != nil {
 		t.Fatal(err)
 	}

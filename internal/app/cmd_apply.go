@@ -397,7 +397,7 @@ func unresolvedVars(s *playbookStep, known map[string]bool) []string {
 	walk(s.Payload)
 	walk(s.Flags)
 	if s.ExpectSchematic != nil {
-		walk(s.ExpectSchematic.jsonValue())
+		walk(s.ExpectSchematic.substitutionValue())
 	}
 	for _, a := range s.Args {
 		walk(a)

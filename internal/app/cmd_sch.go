@@ -112,6 +112,7 @@ func newSchCmd(cfg *appConfig, stdout, stderr io.Writer) *cobra.Command {
 	sch.AddCommand(newSchComposeCmd(stdout, stderr))
 	sch.AddCommand(newSchLibLayoutCmd(stdout, stderr))
 	sch.AddCommand(newSchLayoutPlanCmd(stdout))
+	sch.AddCommand(newSchLayoutEditCmd(stdout))
 	sch.AddCommand(newSchLayoutRenderCmd(stdout))
 	sch.AddCommand(newSchLayoutSheetPlanCmd(stdout))
 	sch.AddCommand(newSchDesignatorsCmd(cfg, &window, stdout, stderr))
@@ -361,7 +362,8 @@ and Size / Width / Height / "Page Size" are not title-block items. Run
 	// ── clear ──────────────────────────────────────────────────────────────
 	// schematic.page.clear
 	{
-		var noPreserveSheet, dryRun, expectEmpty bool
+		var noPreserveSheet, dryRun, expectEmpty, preserveParts bool
+		var partIDs string
 		c := &cobra.Command{
 			Use:   "clear",
 			Short: "Clear the active schematic page (delete all page primitives: components, flags, wires, buses, graphics)",
@@ -370,6 +372,23 @@ and Size / Width / Height / "Page Size" are not title-block items. Run
   easyeda sch clear --dry-run            # report what would be deleted, delete nothing
   easyeda sch clear --no-preserve-sheet  # also delete the sheet/title block`,
 			RunE: func(cmd *cobra.Command, args []string) error {
+				var protected []string
+				if preserveParts {
+					if noPreserveSheet || strings.TrimSpace(partIDs) == "" {
+						return fmt.Errorf("--preserve-parts requires --part-ids and preservation of the sheet")
+					}
+					seen := map[string]bool{}
+					for _, id := range strings.Split(partIDs, ",") {
+						id = strings.TrimSpace(id)
+						if id == "" || seen[id] {
+							return fmt.Errorf("--part-ids requires unique nonempty original primitive IDs")
+						}
+						seen[id] = true
+						protected = append(protected, id)
+					}
+				} else if partIDs != "" {
+					return fmt.Errorf("--part-ids requires --preserve-parts")
+				}
 				// 清页会把图元全删掉,而虚拟组表存的是**位号引用** —— 不一起作废
 				// 就会留下一批指向已不存在器件的孤儿组,下一次 block-apply 想登记
 				// 同名位号时会撞上「该位号已属于组 gN」而拒绝归组(ADR-0003 落地
@@ -381,14 +400,21 @@ and Size / Width / Height / "Page Size" are not title-block items. Run
 					}
 				}
 				res, err := dispatchCapture(cfg, "schematic.page.clear", window, map[string]any{
-					"preserveSheet": !noPreserveSheet,
-					"dryRun":        dryRun,
+					"preserveSheet":   !noPreserveSheet,
+					"dryRun":          dryRun,
+					"preserveParts":   preserveParts,
+					"preservePartIds": protected,
 				}, stdout)
 				if err != nil {
 					return err
 				}
 				if err = verifySchClearResult(res.Result, !dryRun || expectEmpty); err != nil {
 					return err
+				}
+				if preserveParts {
+					if err = verifySchPreservedClearResult(res.Result, protected); err != nil {
+						return err
+					}
 				}
 				if !dryRun && docUUID != "" {
 					dropSchGroupsForPage(project, docUUID, stderr)
@@ -399,6 +425,8 @@ and Size / Width / Height / "Page Size" are not title-block items. Run
 		c.Flags().BoolVar(&dryRun, "dry-run", false, "report counts without deleting anything")
 		c.Flags().BoolVar(&expectEmpty, "expect-empty", false, "fail if any non-preserved primitive remains (also usable with --dry-run)")
 		c.Flags().BoolVar(&noPreserveSheet, "no-preserve-sheet", false, "also delete the sheet/title block (图框); by default it is kept")
+		c.Flags().BoolVar(&preserveParts, "preserve-parts", false, "retain the exact original part instances while clearing drawing content; requires --part-ids")
+		c.Flags().StringVar(&partIDs, "part-ids", "", "complete comma-separated original part primitive IDs required by --preserve-parts")
 		sch.AddCommand(c)
 	}
 
@@ -1341,39 +1369,11 @@ pull fresh ids before any follow-up mutation on it.`,
 				if dispErr == nil {
 					return nil
 				}
-				// Slow-landed recheck: a timeout/DISPATCH_FAILED after the write
-				// actually applied is a FAKE failure, and a blind retry then
-				// creates a duplicate flag+stub. When the target pin is known,
-				// one light read settles it: pin already on the target net →
-				// report success instead.
-				if pinRef == "" {
-					return dispErr
-				}
-				desig, pinNum, ok := splitPinRef(pinRef)
-				if !ok {
-					return dispErr
-				}
-				res, rerr := requestActionTimed(cfg, "schematic.read", window,
-					map[string]any{"includeCheck": false}, acConnectPinTimeout)
-				if rerr != nil || res == nil || !connectLanded(res.Result, desig, pinNum, net) {
-					return dispErr
-				}
-				// 回传假失败(通道 B):daemon 把这次转发记成失败了,而回读证明写
-				// 其实落地了 —— 不回传的话,健康度会把一次「连接器慢」算成一次
-				// 「连接器坏」,degraded 在错误的方向上响。
-				reportWriteVerified(cfg, window, writeVerdict{
-					action: "schematic.power.connect_pin", source: "sch connect",
-					returnedOK: false, landed: 1,
-				})
-				fmt.Fprintf(stderr, "⚠ connect_pin 报超时/派发失败,但回读确认 %s 已在网络 %s 上 —— slow-landed,按成功处理(不要重试,会造重复旗)。\n", pinRef, net)
-				return json.NewEncoder(stdout).Encode(map[string]any{
-					"ok": true,
-					"result": map[string]any{
-						"slowLanded": true,
-						"pin":        pinRef,
-						"net":        net,
-					},
-				})
+				// Existing net membership does not prove this write landed: the
+				// pin may already belong to the requested net with invalid geometry.
+				// Preserve rejection/unknown outcomes and the single daemon response.
+				fmt.Fprintln(stderr, "Connection not confirmed. Read back wires, marker and pin direction before retrying; existing net membership alone is not proof of this write.")
+				return dispErr
 			},
 		}
 		c.Flags().StringVar(&pinRef, "pin", "", "target pin as DESIGNATOR:PIN, e.g. U1:5 (resolved to coordinates; mutually exclusive with --x/--y)")

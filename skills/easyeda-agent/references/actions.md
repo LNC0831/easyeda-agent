@@ -13,6 +13,7 @@
 | 修复功能式位号 | `sch designators allocate` → `plan` → `sch apply` |
 | 完整本地版本比较 | `sch design-diff expected.json actual.json --exit-code`；检查 coverage/unverified |
 | 由测量计算 Lib 内部 | `sch lib-layout --from layout-input.json --out composition.json`；纯离线 |
+| 核心相对移动/单脚标签修复 | `sch layout-edit --source zones.json --page page.json --snapshot fresh.json (--move-core ID --to X,Y \| --repair-pin ID:PIN) --out target.json [--report report.json] [--playbook repair.json]`；纯离线生成，修复 playbook 使用作用域 action |
 | 合并已设计的 Lib 几何 | `sch compose --from … --out … --before … --playbook …` |
 | 放置固定 IR 中的器件 | `sch materialize <connectivity.json> --out …`；不是完整布局/布线器 |
 | 少量显式标记连接增量 | `sch plan <before.json> <after.json>`；不支持任意器件或导线 diff |
@@ -188,3 +189,9 @@ Altium Designer `.SchDoc` / `.PcbDoc` 当前没有可用的 typed action。官�
 文件名和其他字段的整个 JSON，不是原始模型大小。base64 约膨胀 4/3，
 因此原始模型必须小于约 24 MiB，并给 JSON 字段留出余量。超过上限会在 daemon
 入口拒绝，不会交给连接器；请压缩/简化模型或使用库中已有模型。
+### `schematic.pin.repair_marker`
+
+受保护的单脚标记支路替换。输入含页面身份、稳定组件/脚、旧 wire+marker 的完整坐标/ID、
+目标 kind/net/direction/offset 和源快照哈希。daemon 在同一互斥区间内读取基线、验证旧对象，
+删除旧支路、创建新支路并回读；目标 finding 必须消失，范围外对象与旧 finding 必须不变。
+部分写入如实返回，不能重试或声称回滚。只由 `sch layout-edit --playbook` 生成；普通修线不手写。

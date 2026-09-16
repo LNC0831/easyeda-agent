@@ -1,40 +1,27 @@
-# Skill Design
+# Skill 设计
 
-The Phase 1 Skill should guide agents to call typed CLI actions rather than generating EasyEDA JavaScript.
+`skills/easyeda-agent/` 是唯一对外入口，CLI/daemon/Connector 为它服务。
+现行原理图工作流遵守随包发布的
+[数据驱动架构基准](../skills/easyeda-agent/references/schematic-data.md#数据驱动架构基准)，
+不再使用 Phase 1 的“逐件操作 → 截图 → 询问是否保存”示例。
 
-## Skill Responsibilities
+## 职责与路由
 
-- Check connection before work.
-- Read active project/document context.
-- Decide whether the current document is a schematic page.
-- Prefer additive operations unless the user asks for destructive changes.
-- Ask for confirmation before deletion, save, or multi-step mutation plans.
-- Verify mutations with readback and snapshots.
-- Run DRC before claiming schematic work is complete.
-- Export BOM/netlist when the user asks for deliverables.
+- Skill 开始工作先按其版本门禁；离线开发与现场 Apply 的证据分开。
+- 需求/手册 → 完整目标连接数据、核心/外围归属、测量与约束；原始快照不覆盖。
+- 布局、碰撞发现与修复通过数据计算闭环，不由 Agent 手填现场坐标兜底。
+- 使用 typed CLI、保留输入/参数/输出/回读溯源；规范正文集中在数据手册，入口只路由。
+- 逐页对账和严格检查后显式保存，不因保存或已授权的正常步骤反复询问。
+  新的破坏性范围或未决设计选择才需用户决定，持续工作不扩大授权。
+- 官方导图只辅助发现采集/规则遗漏；位号参与布局检查，非位号属性文字排除。
+- 检查器没覆盖的要求明确列为未验证，不能凭文档或 DRC 聚合数声称已保证。
 
-## Example Workflow
+## 维护要求
 
-```text
-User: Add a 10k pull-up resistor from NET_A to 3V3.
+改变底层命令/采集/算法后同步对应 Skill 手册、示例和覆盖边界。
+规范链接须留在安装包内；仓库架构/CLI 索引引用 Skill，避免只在源码仓库才能找到基准。
+使用 `make skill-check` 检查受控包内文件与链接，修改 Skill 时再验证 frontmatter。
+这只能验证打包/文档结构，不替代算法回归或现场验收。
 
-Agent:
-1. easyeda health
-2. easyeda schematic context
-3. easyeda schematic components list
-4. resolve or ask for resistor library identity
-5. easyeda schematic component place ...
-6. easyeda schematic wire create ...
-7. easyeda schematic netflag create ...
-8. easyeda schematic snapshot
-9. summarize the result and ask whether to save
-```
-
-## Missing Action Strategy
-
-If a needed typed action is missing:
-
-1. Check whether the work can be decomposed into existing typed actions.
-2. If not, explain the missing action.
-3. Use raw JavaScript only for exploration or a clearly bounded debug task.
-4. Promote repeated raw JavaScript patterns into a typed action.
+缺失 typed 能力时先查 CLI help/action/API 索引；获准的调试探测保留真实输出，
+重复工作沉淀为 typed action 与 Cobra 子命令，不累积一次性改图脚本。

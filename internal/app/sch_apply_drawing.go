@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+
+	"github.com/zhoushoujianwork/easyeda-agent/internal/schguard"
 )
 
 // Compare drawn geometry independently of the pin netlist. Collinear wires may
@@ -140,6 +142,18 @@ func (e *schematicDrawingExpectation) check(result any) error {
 	if !reflect.DeepEqual(edges, wantEdges) {
 		return fmt.Errorf("drawn wire paths differ from composition (%d grid edges, expected %d)", len(edges), len(wantEdges))
 	}
+	wantWires := append([]powerLayoutWire(nil), e.Wires...)
+	for _, f := range e.Flags {
+		x, y := endpointFor(f.PinX, f.PinY, f.Offset, f.Direction)
+		wantWires = append(wantWires, powerLayoutWire{Net: f.Net, Points: [][2]float64{{f.PinX, f.PinY}, {x, y}}})
+	}
+	// Grid-edge coverage cannot distinguish a bare X from a real junction.
+	// Compare the physical partition separately, before names/ownership gates.
+	// Only original action/observed segment vertices are fed to this kernel;
+	// the synthetic 5raw subdivisions from drawingEdges are never junctions.
+	if err := schguard.CompareWireTopology(drawingContactSnapshot(wantWires), drawingContactSnapshot(wires)); err != nil {
+		return fmt.Errorf("drawn wire contact topology differs from composition: %w", err)
+	}
 	markers := map[string]int{}
 	for _, c := range live.Components {
 		if c.Kind == "part" || c.Kind == "sheet" || c.Kind == "nonElectrical" {
@@ -157,4 +171,19 @@ func (e *schematicDrawingExpectation) check(result any) error {
 		return fmt.Errorf("drawn markers differ from composition")
 	}
 	return nil
+}
+
+func drawingContactSnapshot(wires []powerLayoutWire) map[string]any {
+	var rows []any
+	for _, w := range wires {
+		points := plNormalizeWirePoints(w.Points)
+		for i := 1; i < len(points); i++ {
+			a, b := points[i-1], points[i]
+			rows = append(rows, map[string]any{"x0": a[0], "y0": a[1], "x1": b[0], "y1": b[1]})
+		}
+	}
+	if rows == nil {
+		rows = []any{}
+	}
+	return map[string]any{"wiresAvailable": true, "wires": rows}
 }

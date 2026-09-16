@@ -7,8 +7,18 @@
 
 import { type BeautifyOptions, runBeautify } from './beautify';
 import { armDeadline } from './deadlines';
+import { exactJSON, preservedInstance } from './preserve-instance';
 import { documentTypeLabel, readResponseContext } from './eda-context';
 import { readProjectFootprintSourceArchive } from './native-footprint-source';
+import {
+	assertLegacySimpleWireOperation,
+	classifyWireContact,
+	physicalWireIslands,
+	readObservedWireSegments,
+	WIRE_CONTACT_EPS,
+	wirePointOnSegment,
+	type ObservedWireSegment,
+} from './schematic-wire-topology';
 import {
 	ActionError,
 	type ActionResult,
@@ -922,6 +932,9 @@ async function tagComponentPages(requireComplete = false): Promise<Map<string, {
 export const schematicComponentsList: Handler = async (payload) => {
 	const allPages = optionalBoolean(payload, 'allPages') === true;
 	const includePins = optionalBoolean(payload, 'includePins') === true;
+	// Geometry guards need real pins, not a full netlist compile before every wire.
+	// Omitted nets stay null (unknown), never an invented floating-net fact.
+	const includePinNets = optionalBoolean(payload, 'includePinNets') !== false;
 	// getState_Component().uuid is a 16-char placed-instance id, while
 	// schematic.component.place requires the 32-char device-library uuid.
 	// Connectivity export opts into this hydration so an IR snapshot is
@@ -974,7 +987,7 @@ export const schematicComponentsList: Handler = async (payload) => {
 	// of one physical device (U1.A/U1.B) share the device identity and are NOT
 	// flagged.
 	const ambiguousDesignators = new Set<string>();
-	if (includePins) {
+	if (includePins && includePinNets) {
 		try { pinNetsByDesignator = (await collectNetlistPinNets()).byDesignator; }
 		catch { pinNetsByDesignator = null; }
 		if (pinNetsByDesignator) {
@@ -1090,14 +1103,20 @@ export const schematicComponentsList: Handler = async (payload) => {
 	// Existing wire geometry for the autoconnect scorer (issue #64). Flatten every
 	// wire's polyline into per-edge segments tagged with the wire's net, so the Go
 	// side can hard-reject a stub that would touch a foreign-net wire.
-	const wires: Array<{ x0: number; y0: number; x1: number; y1: number; net: string }> = [];
+	const wires: Array<{ x0: number; y0: number; x1: number; y1: number; net: string; primitiveId: string; segmentIndex: number; rawLine: number[] | number[][]; rawEncoding: string }> = [];
+	let wiresAvailable = false;
+	let wiresError: string | undefined;
 	if (includeWires) {
-		let rawWires: Array<{ getState_Line: () => Array<number>; getState_Net?: () => string; getState_PrimitiveId?: () => string }> = [];
-		try { rawWires = (await eda.sch_PrimitiveWire.getAll() ?? []) as typeof rawWires; }
-		catch { rawWires = []; }
-		const segs = collectWireSegments(rawWires);
-		for (const s of segs) {
-			wires.push({ x0: s.seg[0], y0: s.seg[1], x1: s.seg[2], y1: s.seg[3], net: s.net });
+		try {
+			const rawWires = await eda.sch_PrimitiveWire.getAll();
+			if (!Array.isArray(rawWires)) throw new Error('Wire API did not return an array.');
+			for (const s of collectWireSegments(rawWires)) {
+				wires.push({ x0: s.seg[0], y0: s.seg[1], x1: s.seg[2], y1: s.seg[3], net: s.net, primitiveId: s.wirePrimitiveId, segmentIndex: s.segmentIndex, rawLine: s.rawLine, rawEncoding: s.rawEncoding });
+			}
+			wiresAvailable = true;
+		} catch (err) {
+			wires.length = 0;
+			wiresError = describeThrown(err);
 		}
 	}
 
@@ -1106,6 +1125,7 @@ export const schematicComponentsList: Handler = async (payload) => {
 			components: serialized,
 			count: serialized.length,
 			wires,
+			...(includeWires ? { wiresAvailable, ...(wiresError ? { wiresError } : {}) } : {}),
 			...(connectivitySummary ? { connectivitySummary } : {}),
 		},
 	};
@@ -1435,6 +1455,32 @@ export const schematicComponentModify: Handler = async (payload) => {
 	}
 
 	const normalizedPatch = { ...(patch as Record<string, unknown>) };
+	if (optionalBoolean(payload, 'preserveInstance') === true) {
+		if (Object.keys(normalizedPatch).some(k => !['x', 'y', 'rotation', 'mirror'].includes(k))) {
+			throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, 'preserveInstance permits geometry-only patches; instance properties cannot be changed.');
+		}
+		const current = await getComponentOrThrow(primitiveId);
+		let source: Record<string, unknown>;
+		try { source = preservedInstance(serializeComponent(current)); }
+		catch (err) { throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, describeThrown(err)); }
+		const safePatch = { ...normalizedPatch };
+		for (const key of ['designator', 'uniqueId', 'name', 'manufacturer', 'manufacturerId', 'supplier', 'supplierId', 'addIntoBom', 'addIntoPcb', 'otherProperty']) safePatch[key] = source[key];
+		let modified;
+		try { modified = await eda.sch_PrimitiveComponent.modify(primitiveId, safePatch as Parameters<typeof eda.sch_PrimitiveComponent.modify>[1]); }
+		catch (err) { throw edaError(err, 'Failed to move preserved component.'); }
+		if (!modified) throw new ActionError(ErrorCodes.EDA_CALL_FAILED, 'Preserved component modify returned no instance.');
+		try {
+			const fresh = await getComponentOrThrow(primitiveId);
+			const actual = preservedInstance(serializeComponent(fresh));
+			const notApplied = Object.keys(source).filter(k => exactJSON(source[k]) !== exactJSON(actual[k]));
+			return { result: { component: serializeComponent(fresh), instancePreserved: notApplied.length === 0,
+				...(notApplied.length ? { partial: true, notApplied, instanceBefore: source } : {}) } };
+		}
+		catch (err) {
+			return { result: { component: serializeComponent(modified), instancePreserved: false, verified: false, partial: true,
+				notApplied: ['instance-readback'], instanceBefore: source }, warnings: [describeThrown(err)] };
+		}
+	}
 	const hasCustomAttributes = Object.prototype.hasOwnProperty.call(normalizedPatch, 'customAttributes');
 	const hasOtherProperty = Object.prototype.hasOwnProperty.call(normalizedPatch, 'otherProperty');
 	if (hasCustomAttributes && hasOtherProperty) {
@@ -1643,71 +1689,50 @@ export interface SchDeleteCascadeTree {
 }
 
 /**
- * Pure cascade planner (exported for tests): group wires into trees by shared
- * vertices (union-find, same tolerance family as bridge-check), then keep the
+ * Pure cascade planner (exported for tests): group actual segments by physical
+ * contact (bare interior X does not join), then keep the
  * trees that touch at least one target pin and NO survivor pin. Marker/pin
  * anchoring is point-on-SEGMENT, not vertex proximity (merged collinear wires
  * swallow flags mid-span — issue #135).
  */
 export function planSchDeleteCascadeTrees(
 	targets: Array<{ id: string; pins: Array<{ x: number; y: number }> }>,
-	wires: Array<{ id: string; points: Array<number> }>,
+	wires: Array<{ id: string; points: unknown }>,
 	markers: Array<{ id: string; x: number; y: number }>,
 	survivorPins: Array<{ x: number; y: number }>,
 ): Array<SchDeleteCascadeTree> {
-	const TOL = CHECK_EPS * 8;
-	const segsOf = (points: Array<number>): Array<[number, number, number, number]> => {
-		const segs: Array<[number, number, number, number]> = [];
-		for (let i = 0; i + 3 < points.length; i += 2) {
-			segs.push([points[i], points[i + 1], points[i + 2], points[i + 3]]);
-		}
-		return segs;
-	};
-	const distToSeg = (px: number, py: number, x0: number, y0: number, x1: number, y1: number): number => {
-		const dx = x1 - x0, dy = y1 - y0;
-		const len2 = dx * dx + dy * dy;
-		if (len2 === 0) return Math.hypot(px - x0, py - y0);
-		let t = ((px - x0) * dx + (py - y0) * dy) / len2;
-		t = Math.max(0, Math.min(1, t));
-		return Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy));
-	};
-
-	// Union-find over wires sharing a vertex.
-	const usable = wires.filter(w => w.id && w.points.length >= 4);
-	const parent = usable.map((_, i) => i);
-	const find = (a: number): number => { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; } return a; };
-	const union = (a: number, b: number) => { parent[find(a)] = find(b); };
-	const verts = usable.map(w => {
-		const vs: Array<[number, number]> = [];
-		for (let i = 0; i + 1 < w.points.length; i += 2) vs.push([w.points[i], w.points[i + 1]]);
-		return vs;
+	const segments = collectWireSegments(wires.map(w => ({
+		getState_Line: () => w.points, getState_PrimitiveId: () => w.id,
+	})));
+	const anchors = [...targets.flatMap(t => t.pins), ...survivorPins, ...markers];
+	if (anchors.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) throw new Error('Cascade anchor geometry unavailable.');
+	const islands = physicalWireIslands(segments, anchors).map(indices => {
+		const segs = indices.map(i => segments[i]);
+		const onTree = (p: { x: number; y: number }) => segs.some(s => wirePointOnSegment(p, s.seg));
+		return {
+			wireIds: [...new Set(segs.map(s => s.wirePrimitiveId))],
+			flagIds: [...new Set(markers.filter(onTree).map(m => m.id))],
+			ownerIds: targets.filter(t => t.pins.some(onTree)).map(t => t.id),
+			hasSurvivor: survivorPins.some(onTree),
+		};
 	});
-	for (let i = 0; i < usable.length; i++) {
-		for (let j = i + 1; j < usable.length; j++) {
-			if (verts[i].some(a => verts[j].some(b => Math.hypot(a[0] - b[0], a[1] - b[1]) <= TOL))) union(i, j);
-		}
+	// The official delete API deletes whole primitives. A single primitive can
+	// span independent physical islands; deleting its target-exclusive arm must
+	// not delete a survivor's arm or any island outside the cascade scope.
+	const eligible = islands.map(t => t.ownerIds.length > 0 && !t.hasSurvivor);
+	const protectedIds = new Set(islands.flatMap((t, i) => eligible[i] ? [] : t.wireIds));
+	// If a candidate contains a protected primitive, keep its entire tree and
+	// propagate protection: another shared primitive must not partly erase it.
+	let changed = true;
+	while (changed) {
+		changed = false;
+		islands.forEach((t, i) => {
+			if (eligible[i] && t.wireIds.some(id => protectedIds.has(id))) {
+				eligible[i] = false; t.wireIds.forEach(id => protectedIds.add(id)); changed = true;
+			}
+		});
 	}
-	const byRoot = new Map<number, { wireIds: Array<string>; segs: Array<[number, number, number, number]> }>();
-	usable.forEach((w, i) => {
-		const root = find(i);
-		const t = byRoot.get(root) ?? { wireIds: [], segs: [] };
-		t.wireIds.push(w.id);
-		t.segs.push(...segsOf(w.points));
-		byRoot.set(root, t);
-	});
-
-	const out: Array<SchDeleteCascadeTree> = [];
-	for (const t of byRoot.values()) {
-		const onTree = (x: number, y: number) => t.segs.some(s => distToSeg(x, y, s[0], s[1], s[2], s[3]) <= TOL);
-		const ownerIds = targets
-			.filter(target => target.pins.some(p => onTree(p.x, p.y)))
-			.map(target => target.id);
-		if (ownerIds.length === 0) continue; // tree untouched by the delete
-		if (survivorPins.some(p => onTree(p.x, p.y))) continue; // shared — never delete
-		const flagIds = markers.filter(m => m.id && onTree(m.x, m.y)).map(m => m.id);
-		out.push({ wireIds: [...t.wireIds], flagIds: [...new Set(flagIds)], ownerIds });
-	}
-	return out;
+	return islands.filter((_, i) => eligible[i]).map(({ wireIds, flagIds, ownerIds }) => ({ wireIds, flagIds, ownerIds }));
 }
 
 /** Read everything the cascade planner needs BEFORE the components are deleted
@@ -1720,19 +1745,9 @@ async function collectSchDeleteCascadePlan(ids: Array<string>): Promise<Array<Sc
 	if (!Array.isArray(components) || !Array.isArray(rawWires)) {
 		throw new Error('component/wire enumeration did not return arrays');
 	}
-	const wires: Array<{ id: string; points: Array<number> }> = [];
+	const wires: Array<{ id: string; points: unknown }> = [];
 	for (const w of rawWires) {
-		try {
-			const line = w.getState_Line();
-			if (Array.isArray(line)) {
-				// Nested [[x,y],…] and flat [x,y,…] both occur; normalize to flat.
-				const flat: Array<number> = Array.isArray(line[0])
-					? (line as unknown as Array<Array<number>>).flatMap(p => [p[0], p[1]])
-					: (line as Array<number>);
-				wires.push({ id: String(w.getState_PrimitiveId?.() ?? ''), points: flat });
-			}
-		}
-		catch { /* a wire without geometry cannot anchor anything */ }
+		wires.push({ id: String(w.getState_PrimitiveId?.() ?? ''), points: w.getState_Line() });
 	}
 	const NET_MARKER_TYPES = new Set(['netflag', 'netport', 'netlabel', 'short_symbol']);
 	const targets: Array<{ id: string; pins: Array<{ x: number; y: number }> }> = [];
@@ -1742,22 +1757,23 @@ async function collectSchDeleteCascadePlan(ids: Array<string>): Promise<Array<Sc
 		let type = '';
 		let pid = '';
 		try { type = String(c.getState_ComponentType?.() ?? ''); pid = String(c.getState_PrimitiveId?.() ?? ''); }
-		catch { continue; }
+		catch (err) { throw new Error(`Cascade component identity unavailable: ${describeThrown(err)}`); }
 		if (NET_MARKER_TYPES.has(type)) {
 			// A marker that is itself a delete target goes away with the component
 			// delete — exclude it so it is not double-deleted by the cascade.
 			if (idSet.has(pid)) continue;
 			try { markers.push({ id: pid, x: c.getState_X(), y: c.getState_Y() }); }
-			catch { /* marker without coords */ }
+			catch (err) { throw new Error(`Cascade marker geometry unavailable: ${describeThrown(err)}`); }
 			continue;
 		}
 		if (type === SCH_SHEET_TYPE) continue;
 		let pins: Array<{ x: number; y: number }> = [];
 		try {
 			const raw = await eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId(pid);
-			pins = (raw ?? []).map(p => ({ x: p.getState_X(), y: p.getState_Y() }));
+			if (!Array.isArray(raw)) throw new Error('Pin API did not return an array.');
+			pins = raw.map(p => ({ x: p.getState_X(), y: p.getState_Y() }));
 		}
-		catch { /* a part whose pins cannot be read contributes none */ }
+		catch (err) { throw new Error(`Cascade pin geometry unavailable: ${describeThrown(err)}`); }
 		if (idSet.has(pid)) targets.push({ id: pid, pins });
 		else survivorPins.push(...pins);
 	}
@@ -2063,7 +2079,113 @@ function countIds(idsByKey: Record<string, Array<string>>): number {
 	return n;
 }
 
+// Explicit identity-set contract: never infer a complete protected set from a
+// partial caller inventory. All collection succeeds before the first delete.
+const schematicPageClearPreservingParts: Handler = async (payload) => {
+	if (optionalBoolean(payload, 'preserveSheet') === false) throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, 'preserveParts requires preserving the sheet.');
+	const requested = requireStringArray(payload, 'preservePartIds');
+	if (!requested.length || requested.some(id => !id.trim()) || new Set(requested).size !== requested.length) throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, 'preservePartIds requires a complete unique nonempty part ID set.');
+	const ids = [...requested].sort();
+	const dryRun = optionalBoolean(payload, 'dryRun') === true;
+	let source: Record<string, Record<string, unknown>> | undefined;
+	let protectedAttributes: Array<string> | undefined;
+	let attributeCoverage = 'existing-parents';
+	const collect = async (): Promise<Record<string, Array<string>>> => {
+		const components = await eda.sch_PrimitiveComponent.getAll();
+		const parts = components.filter(c => String(c.getState_ComponentType()) === 'part');
+		const actualIds = parts.map(c => c.getState_PrimitiveId()).sort();
+		if (exactJSON(actualIds) !== exactJSON(ids)) throw new Error('preserveParts: fresh part set differs from explicit preservePartIds');
+		const sheets = components.filter(c => String(c.getState_ComponentType()) === SCH_SHEET_TYPE);
+		if (sheets.length !== 1) throw new Error('preserveParts requires exactly one existing sheet');
+		const current: Record<string, Record<string, unknown>> = {};
+		const nativeIds = new Set<string>();
+		for (const part of parts) {
+			const state = preservedInstance(serializeComponent(part), true);
+			const nativeId = String(state.uniqueId);
+			if (nativeIds.has(nativeId)) throw new Error('preserveParts: duplicate native uniqueId');
+			nativeIds.add(nativeId); current[part.getState_PrimitiveId()] = state;
+		}
+		if (source && exactJSON(source) !== exactJSON(current)) throw new Error('preserveParts: original instance state changed during clear');
+		if (!source) source = current;
+		const warnings: Array<string> = [];
+		const groups = await enumerateSchPagePrimitives(true, warnings);
+		if (warnings.length) throw new Error(warnings.join('; '));
+		if (exactJSON([...(groups.components ?? [])].sort()) !== exactJSON(ids)) throw new Error('preserveParts: part set changed during enumeration');
+		delete groups.components;
+		const protectedParents = new Set([...ids, sheets[0].getState_PrimitiveId()]);
+		const protectedIds = new Set(protectedParents);
+		// Component-owned attributes are preserved; all other attributes are
+		// part of the authorized drawing rebuild, including orphan remnants.
+		const attributes = new Map<string, Awaited<ReturnType<typeof eda.sch_PrimitiveAttribute.getAll>>[number]>();
+		const globalAttributes = await eda.sch_PrimitiveAttribute.getAll();
+		for (const attribute of globalAttributes) attributes.set(attribute.getState_PrimitiveId(), attribute);
+		// Some official builds return [] for unscoped getAll despite populated
+		// component properties. Enumerate every actual parent; [] globally is
+		// never sufficient evidence that protected attributes do not exist.
+		for (const component of components) {
+			for (const attribute of await eda.sch_PrimitiveAttribute.getAll(component.getState_PrimitiveId())) attributes.set(attribute.getState_PrimitiveId(), attribute);
+		}
+		const globalIds = new Set(globalAttributes.map(a => a.getState_PrimitiveId()));
+		attributeCoverage = attributes.size > 0 && [...attributes.keys()].every(id => globalIds.has(id)) ? 'global-and-existing-parents' : 'existing-parents';
+		const owned: Array<string> = [];
+		for (const attribute of attributes.values()) {
+			const id = attribute.getState_PrimitiveId();
+			if (protectedParents.has(attribute.getState_ParentPrimitiveId())) { protectedIds.add(id); owned.push(id); }
+			else (groups.orphanAttributes ??= []).push(id);
+		}
+		owned.sort();
+		if (protectedAttributes && exactJSON(protectedAttributes) !== exactJSON(owned)) throw new Error('preserveParts: original owned attribute IDs changed during clear');
+		if (!protectedAttributes) protectedAttributes = owned;
+		// Object.getAll is the embedded-object inventory, NOT an inventory of
+		// all schematic primitives. An empty result makes no broader claim.
+		for (const object of await eda.sch_PrimitiveObject.getAll()) {
+			const id = object.getState_PrimitiveId();
+			if (!protectedIds.has(id) && !Object.values(groups).some(group => group.includes(id))) (groups.objects ??= []).push(id);
+		}
+		return groups;
+	};
+	let first: Record<string, Array<string>>;
+	try { first = await collect(); }
+	catch (err) { throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, `No primitives deleted: ${describeThrown(err)}`); }
+	let live = first, passes = 0;
+	const warnings: Array<string> = [];
+	if (!dryRun) {
+		while (countIds(live) > 0 && passes < MAX_CLEAR_PASSES) {
+			passes++;
+			try {
+				for (const [key, group] of Object.entries(live)) {
+					if (key === 'orphanAttributes' || key === 'objects') {
+						for (let i = 0; i < group.length; i += SCH_DELETE_BATCH) {
+							const batch = group.slice(i, i + SCH_DELETE_BATCH);
+							if (!await deleteSchPagePrimitives(batch)) {
+								if (key === 'orphanAttributes') throw new Error('Generic persisted deletion is required for orphan attributes.');
+								else await eda.sch_PrimitiveObject.delete(batch);
+							}
+						}
+					} else await deleteSchGroup(key, group);
+				}
+				live = await collect();
+			}
+			catch (err) {
+				warnings.push(describeThrown(err));
+				return { result: { preserveParts: true, preservedPartIds: ids, instancesPreserved: false, dryRun,
+					deletedIds: first, remaining: countIds(live), passes, warnings, partial: true, notApplied: ['preserved-clear-verification'] } };
+			}
+		}
+	}
+	const remaining = countIds(live);
+	const deleted: Record<string, number> = {};
+	for (const [key, group] of Object.entries(first)) deleted[key] = dryRun ? group.length : group.length - (live[key]?.length ?? 0);
+	return { result: { preserveParts: true, preserveSheet: true, preservedPartIds: ids, instancesPreserved: true,
+		deleted, deletedIds: first, total: dryRun ? countIds(first) : countIds(first) - remaining, remaining, passes, dryRun,
+		attributeCoverage, preservedAttributeIds: protectedAttributes,
+		...(attributeCoverage === 'existing-parents' ? { coverageNotes: ['Unscoped attribute inventory is not proven complete; attributes without a discoverable existing parent remain unverified.'] } : {}),
+		...(!dryRun && remaining ? { partial: true, notApplied: ['remaining-primitives'], warnings: [`${remaining} drawing primitives remain`] } : {}) } };
+};
+
 const schematicPageClear: Handler = async (payload) => {
+	if (optionalBoolean(payload, 'preserveParts') === true) return schematicPageClearPreservingParts(payload);
+	if (payload.preservePartIds != null) throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, 'preservePartIds requires preserveParts:true.');
 	const preserveSheet = optionalBoolean(payload, 'preserveSheet') !== false;
 	const dryRun = optionalBoolean(payload, 'dryRun') === true;
 	const warnings: Array<string> = [];
@@ -2336,6 +2458,13 @@ const schematicGroupMove: Handler = async (payload) => {
 	catch (err) {
 		throw edaError(err, 'group-move: failed to read components/wires for id resolution.');
 	}
+	if (!Array.isArray(allComponents) || !Array.isArray(allWires)) throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, 'group-move: component/wire inventory unavailable.');
+	let wirePlans: Map<string, Seg>;
+	try {
+		wirePlans = assertLegacySimpleWireOperation(collectWireSegments(allWires), wantIds, { x: dx, y: dy });
+	} catch (err) {
+		throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, `group-move: refused before mutation: ${describeThrown(err)}`);
+	}
 
 	const movedComponents: Array<Record<string, unknown>> = [];
 	const movedFlags: Array<Record<string, unknown>> = [];
@@ -2429,7 +2558,7 @@ const schematicGroupMove: Handler = async (payload) => {
 		const id = wire.getState_PrimitiveId();
 		if (!wantIds.has(id)) continue;
 		seen.add(id);
-		const line = normalizeWirePoints(wire.getState_Line());
+		const line = wirePlans.get(id)!;
 		const shifted = line.map((v, i) => (i % 2 === 0 ? v + dx : v + dy));
 		const net = wire.getState_Net();
 		const color = wire.getState_Color();
@@ -2437,28 +2566,7 @@ const schematicGroupMove: Handler = async (payload) => {
 		const lineType = wire.getState_LineType();
 		try { await eda.sch_PrimitiveWire.delete([id]); }
 		catch (err) { throw edaError(err, `group-move: failed to remove old wire ${id} before recreating it shifted.`); }
-		// The platform MERGES same-net wires sharing endpoints into ONE primitive
-		// whose line is a SEGMENT ARRAY ((x1,y1,x2,y2)×N, arbitrary order) — feeding
-		// that back to create() as-is is REJECTED (live 2026-08-12: the 3-segment
-		// LED_CTRL run died here, deleting the wire without a replacement). Recreate
-		// segment-array wires as N single-segment creates; the platform re-merges
-		// them on its own. A plain 2-point stub goes through the single-create path.
-		const isSegArray = shifted.length >= 8 && shifted.length % 4 === 0;
-		if (isSegArray) {
-			const newIds: Array<string> = [];
-			for (let s = 0; s + 3 < shifted.length; s += 4) {
-				const seg = [shifted[s], shifted[s + 1], shifted[s + 2], shifted[s + 3]];
-				if (Math.abs(seg[0] - seg[2]) <= 1e-6 && Math.abs(seg[1] - seg[3]) <= 1e-6) continue; // zero-length filler
-				let part;
-				try { part = await eda.sch_PrimitiveWire.create(seg, net, color, lineWidth, lineType); }
-				catch (err) { throw edaError(err, `group-move: failed to recreate segment ${s / 4 + 1} of merged wire ${id} (original deleted, ${newIds.length} segment(s) already recreated — finish manually with sch wire).`); }
-				if (!part) throw new ActionError(ErrorCodes.EDA_CALL_FAILED, `group-move: segment recreate of merged wire ${id} returned no primitive.`);
-				newIds.push(part.getState_PrimitiveId());
-			}
-			if (newIds.length === 0) throw new ActionError(ErrorCodes.EDA_CALL_FAILED, `group-move: merged wire ${id} produced no recreatable segments (original deleted).`);
-			movedWires.push({ oldPrimitiveId: id, newPrimitiveId: newIds[0], newPrimitiveIds: newIds, net, segments: newIds.length });
-			continue;
-		}
+		// Preflight proved this is one observed segment before any component moved.
 		let created;
 		try { created = await eda.sch_PrimitiveWire.create(shifted, net, color, lineWidth, lineType); }
 		catch (err) { throw edaError(err, `group-move: failed to recreate wire ${id} at the shifted position (original was deleted — rerun with the same spec to retry).`); }
@@ -3053,6 +3161,7 @@ interface CheckFinding {
 	count?: number; // rule-specific slot: floating-pin 悬空脚数 / multi-net-wire 异名数 / polarity-convention-outlier 同页多数派票数(majorityCount)
 	message?: string;
 	at?: { x: number; y: number }; // location of a crossing / through-pin
+	segments?: Array<{ primitiveId: string; segmentIndex: number; rawEncoding: string }>;
 }
 
 // Geometry tolerance in schematic units. Pin and wire-endpoint coords come off
@@ -3087,11 +3196,7 @@ function pointOnSegment(px: number, py: number, x1: number, y1: number, x2: numb
 	return Math.abs(cross) <= CHECK_EPS * Math.max(1, Math.hypot(x2 - x1, y2 - y1));
 }
 
-interface CheckWireSegment {
-	seg: Seg;
-	wirePrimitiveId: string;
-	net: string;
-}
+type CheckWireSegment = ObservedWireSegment;
 
 interface NetlistPinInfo {
 	net?: string;
@@ -3102,34 +3207,10 @@ interface NetlistComponentInfo {
 	pinInfoMap?: Record<string, NetlistPinInfo>;
 }
 
-// Flatten every wire's line into segments. The platform MERGES same-net wires
-// sharing endpoints into ONE primitive whose line is a SEGMENT ARRAY
-// ((x1,y1,x2,y2)×N, arbitrary order) — reading that as a polyline fabricates
-// diagonal pseudo-segments between unrelated segment endpoints, which the
-// wire-crossing rule then reports as phantom crossings (live 2026-08-12: a
-// 4-segment orthogonal GND merge tree "crossed itself" at the pseudo-diagonal's
-// midpoint). Same parse rule as the dangling fix: an EVEN vertex count ≥4 is a
-// segment array (stride 4); odd counts chain as a polyline (stride 2).
-function collectWireSegments(wires: Array<{ getState_Line: () => Array<number>; getState_Net?: () => string; getState_PrimitiveId?: () => string }>): Array<CheckWireSegment> {
-	const segs: Array<CheckWireSegment> = [];
-	for (const w of wires) {
-		let line: Array<number> | undefined;
-		try { line = w.getState_Line(); }
-		catch { continue; }
-		if (!Array.isArray(line)) continue;
-		let wirePrimitiveId = '';
-		let net = '';
-		try { wirePrimitiveId = String(w.getState_PrimitiveId?.() ?? ''); }
-		catch { /* optional */ }
-		try { net = String(w.getState_Net?.() ?? ''); }
-		catch { /* optional */ }
-		const verts = Math.floor(line.length / 2);
-		const stride = verts >= 4 && verts % 2 === 0 ? 4 : 2;
-		for (let i = 0; i + 3 < line.length; i += stride) {
-			segs.push({ seg: [line[i], line[i + 1], line[i + 2], line[i + 3]], wirePrimitiveId, net });
-		}
-	}
-	return segs;
+// Only observed geometry uses this decoder. Authored create points continue to
+// use normalizeWirePoints, whose vertices describe a single requested path.
+export function collectWireSegments(wires: Parameters<typeof readObservedWireSegments>[0]): Array<CheckWireSegment> {
+	return readObservedWireSegments(wires);
 }
 
 // Result of reading the JSON-authoritative netlist. `available` distinguishes
@@ -3250,26 +3331,6 @@ export function detectPolarityConventionOutliers(
 
 type Seg = [number, number, number, number];
 
-// Signed orientation of point C relative to directed segment A→B; 0 = collinear
-// (within eps), ±1 = the two sides. Used for the proper-intersection test.
-function orient(ax: number, ay: number, bx: number, by: number, cx: number, cy: number): number {
-	const v = (by - ay) * (cx - bx) - (bx - ax) * (cy - by);
-	return v > CHECK_EPS ? 1 : v < -CHECK_EPS ? -1 : 0;
-}
-
-// True only when two segments cross in BOTH interiors (a real routing tangle).
-// Shared endpoints, T-junctions, and collinear overlaps give a 0 orientation and
-// are excluded — those are legitimate (wires meet at pins/junctions).
-function segmentsProperlyCross(s1: Seg, s2: Seg): boolean {
-	const [a, b, c, d] = s1;
-	const [e, f, g, h] = s2;
-	const o1 = orient(a, b, c, d, e, f);
-	const o2 = orient(a, b, c, d, g, h);
-	const o3 = orient(e, f, g, h, a, b);
-	const o4 = orient(e, f, g, h, c, d);
-	return o1 !== 0 && o2 !== 0 && o3 !== 0 && o4 !== 0 && o1 !== o2 && o3 !== o4;
-}
-
 // Intersection point of two (properly crossing) segments; null if near-parallel.
 function segIntersection(s1: Seg, s2: Seg): { x: number; y: number } | null {
 	const [x1, y1, x2, y2] = s1;
@@ -3300,7 +3361,8 @@ const schematicCheck: Handler = async (payload) => {
 	catch (err) {
 		throw edaError(err, 'Failed to read schematic for design check.');
 	}
-	const wireSegs = collectWireSegments((wires ?? []) as Array<{ getState_Line: () => Array<number>; getState_Net?: () => string; getState_PrimitiveId?: () => string }>);
+	if (!Array.isArray(components) || !Array.isArray(wires)) throw new Error('Incomplete design-check component/wire enumeration.');
+	const wireSegs = collectWireSegments(wires);
 	const segs = wireSegs.map(w => w.seg);
 
 	// Connection anchors that legitimately terminate a stub but are NOT real pins:
@@ -3313,7 +3375,7 @@ const schematicCheck: Handler = async (payload) => {
 	for (const c of components ?? []) {
 		let type: string;
 		try { type = String(c.getState_ComponentType?.() ?? ''); }
-		catch { continue; }
+		catch (err) { throw new Error(`Check component identity unavailable: ${describeThrown(err)}`); }
 		if (!NET_MARKER_TYPES.has(type)) continue;
 		try {
 			connectionMarkers.push({
@@ -3324,7 +3386,7 @@ const schematicCheck: Handler = async (payload) => {
 				componentType: type,
 			});
 		}
-		catch { /* marker without coords — skip */ }
+		catch (err) { throw new Error(`Check marker geometry unavailable: ${describeThrown(err)}`); }
 	}
 	// Every wire vertex (segment endpoint). A pin coincident with a wire endpoint is
 	// a legitimate termination/junction even if a merged collinear wire also runs
@@ -3351,9 +3413,7 @@ const schematicCheck: Handler = async (payload) => {
 	for (const m of connectionMarkers) {
 		if (!m.net) continue;
 		for (const ws of wireSegs) {
-			const touchesEndpoint = Math.hypot(m.x - ws.seg[0], m.y - ws.seg[1]) <= COINCIDE_TOL
-				|| Math.hypot(m.x - ws.seg[2], m.y - ws.seg[3]) <= COINCIDE_TOL;
-			if (!touchesEndpoint) continue;
+			if (!wirePointOnSegment(m, ws.seg)) continue;
 			if (ws.wirePrimitiveId) {
 				const markerWireKey = `${ws.wirePrimitiveId}\u0000${m.primitiveId || m.x + ',' + m.y}\u0000${m.net}`;
 				if (!seenMarkerWire.has(markerWireKey)) {
@@ -3418,8 +3478,9 @@ const schematicCheck: Handler = async (payload) => {
 		const primitiveId = c.getState_PrimitiveId();
 		let pins;
 		try { pins = await eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId(primitiveId); }
-		catch { continue; }
-		if (!pins || pins.length === 0) continue;
+		catch (err) { throw new Error(`Check pin geometry unavailable: ${describeThrown(err)}`); }
+		if (!Array.isArray(pins)) throw new Error('Check pin API did not return an array.');
+		if (pins.length === 0) continue;
 		const designator = c.getState_Designator?.() ?? '';
 
 		// #183 phase 1: candidate collection — capacitor-designated (C+digits; the
@@ -3533,25 +3594,50 @@ const schematicCheck: Handler = async (payload) => {
 		}
 	}
 
-	// Rule 2: wire-crossing — two wire segments cross in their interiors (a routing
-	// tangle layout-lint can't see; it only checks component bbox overlap). Shared
-	// endpoints / junctions are excluded. Cap reported findings, count them all.
+	// The supported host keeps bare orthogonal interior Xs electrically separate.
+	// INFO is earned from complete raw geometry, measured anchors, and fresh
+	// pin→net witnesses on BOTH physical islands. A name alone is not proof.
+	if ([...allPins, ...connectionMarkers].some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) throw new Error('Incomplete check anchor coordinates.');
+	const crossingAnchors = [...allPins, ...connectionMarkers];
+	const physicalIslands = physicalWireIslands(wireSegs, crossingAnchors);
+	const verifiedSegments = new Set<number>();
+	for (const island of physicalIslands) {
+		const own = island.map(i => wireSegs[i]);
+		const names = new Set(own.map(w => w.net));
+		const onIsland = (p: { x: number; y: number }) => own.some(w => wirePointOnSegment(p, w.seg));
+		const witnesses = allPins.filter(p => p.designator && onIsland(p));
+		const expected = own[0]?.net ?? '';
+		const verified = netlistAvailable && !allPages && expected !== '' && names.size === 1
+			&& witnesses.length > 0 && witnesses.every(p => netlistPinNets.get(p.designator)?.get(p.number) === expected)
+			&& connectionMarkers.filter(onIsland).every(m => m.net === expected);
+		if (verified) island.forEach(i => verifiedSegments.add(i));
+	}
 	const CROSS_CAP = 50;
 	let crossingTotal = 0;
 	for (let i = 0; i < segs.length; i++) {
 		for (let j = i + 1; j < segs.length; j++) {
-			if (!segmentsProperlyCross(segs[i], segs[j])) continue;
-			crossingTotal++;
-			if (findings.filter(f => f.type === 'wire-crossing').length < CROSS_CAP) {
-				const at = segIntersection(segs[i], segs[j]) ?? undefined;
-				findings.push({
-					type: 'wire-crossing',
-					level: 'warn',
-					count: 1,
-					at,
-					message: '两条导线交叉(走线打结;改走通道/换 L 形拐点避开)',
-				});
+			const relation = classifyWireContact(segs[i], segs[j]);
+			const a = wireSegs[i], b = wireSegs[j];
+			if ((relation === 'endpoint-touch' || relation === 'collinear-overlap') && a.net && b.net && a.net !== b.net) {
+				findings.push({ type: 'wire-contact', level: 'error', nets: [a.net, b.net],
+					message: '异网导线存在端点/T接/共线重叠的真实电气接触',
+					segments: [a, b].map(s => ({ primitiveId: s.wirePrimitiveId, segmentIndex: s.segmentIndex, rawEncoding: s.rawEncoding })) });
 			}
+			if (relation !== 'proper-cross') continue;
+			crossingTotal++;
+			if (findings.filter(f => f.type === 'wire-crossing').length >= CROSS_CAP) continue;
+			const anchorAtCrossing = [...crossingAnchors, ...wireEndpoints].some(p => wirePointOnSegment(p, segs[i]) && wirePointOnSegment(p, segs[j]));
+			const verified = !anchorAtCrossing && verifiedSegments.has(i) && verifiedSegments.has(j);
+			findings.push({
+				type: 'wire-crossing',
+				level: verified ? 'info' : 'error',
+				count: 1,
+				at: segIntersection(segs[i], segs[j]) ?? undefined,
+				segments: [a, b].map(s => ({ primitiveId: s.wirePrimitiveId, segmentIndex: s.segmentIndex, rawEncoding: s.rawEncoding })),
+				message: verified
+					? '已验证无接点正交内部交叉：原始段端不在交点、无引脚/标记，两个物理线岛的逐pin网络证据完整'
+					: '交叉未获得无接点证据：存在引脚/标记或逐pin网络/原始几何不完整，不能豁免',
+			});
 		}
 	}
 
@@ -3589,27 +3675,14 @@ const schematicCheck: Handler = async (payload) => {
 	let zeroLengthWires = 0;
 	let danglingWires = 0;
 	const STRAY_CAP = 50;
-	for (const w of wires ?? []) {
-		let line: Array<number> | Array<Array<number>> | undefined;
-		try { line = w.getState_Line(); }
-		catch { continue; }
-		if (!Array.isArray(line) || line.length === 0) continue;
-		// getState_Line is flat [x1,y1,x2,y2,…] OR nested [[x1,y1],[x2,y2],…].
-		const verts: Array<[number, number]> = [];
-		if (Array.isArray(line[0])) {
-			for (const p of line as Array<Array<number>>) verts.push([p[0], p[1]]);
-		}
-		else {
-			const flat = line as Array<number>;
-			for (let i = 0; i + 1 < flat.length; i += 2) verts.push([flat[i], flat[i + 1]]);
-		}
-		if (verts.length === 0) continue;
-		let wirePid = '';
-		let wnet = '';
-		try { wirePid = String(w.getState_PrimitiveId?.() ?? ''); }
-		catch { /* optional */ }
-		try { wnet = String(w.getState_Net?.() ?? ''); }
-		catch { /* optional */ }
+	const byWire = new Map<string, CheckWireSegment[]>();
+	for (const s of wireSegs) {
+		const own = byWire.get(s.wirePrimitiveId) ?? [];
+		own.push(s); byWire.set(s.wirePrimitiveId, own);
+	}
+	for (const [wirePid, own] of byWire) {
+		const verts: Array<[number, number]> = own.flatMap(s => [[s.seg[0], s.seg[1]], [s.seg[2], s.seg[3]]] as Array<[number, number]>);
+		const wnet = own[0].net;
 
 		// Zero-length: every vertex coincides with the first (within eps).
 		const isZero = verts.every(v => Math.hypot(v[0] - verts[0][0], v[1] - verts[0][1]) <= CHECK_EPS);
@@ -3636,17 +3709,9 @@ const schematicCheck: Handler = async (payload) => {
 		//     arbitrary order), NOT a polyline. Reading verts[0]/verts[last] as "the
 		//     two ends" then picks interior corner points and a perfectly-connected
 		//     3-segment L-run reports dangling. Free ends are the DEGREE-1 vertices
-		//     of the segment graph. Even vertex counts ≥4 parse as segment pairs
-		//     (the observed merged form; a plain 2-vertex stub is identical either
-		//     way); odd counts fall back to polyline chaining.
+		//     of the original segment graph; never infer a second encoding here.
 		const endpoints: Array<[number, number]> = (() => {
-			const segs: Array<[[number, number], [number, number]]> = [];
-			if (verts.length >= 4 && verts.length % 2 === 0) {
-				for (let i = 0; i + 1 < verts.length; i += 2) segs.push([verts[i], verts[i + 1]]);
-			}
-			else {
-				for (let i = 0; i + 1 < verts.length; i++) segs.push([verts[i], verts[i + 1]]);
-			}
+			const segs: Array<[[number, number], [number, number]]> = own.map(s => [[s.seg[0], s.seg[1]], [s.seg[2], s.seg[3]]]);
 			const deg = new Map<string, { v: [number, number]; n: number }>();
 			const keyOf = (v: [number, number]) => `${Math.round(v[0] * 100)}:${Math.round(v[1] * 100)}`;
 			for (const [a, b] of segs) {
@@ -3703,7 +3768,7 @@ const schematicCheck: Handler = async (payload) => {
 		polarityConventionOutliers,
 		total: findings.length,
 	};
-	return { result: { passed: findings.length === 0, summary, findings } };
+	return { result: { passed: findings.every(f => f.level === 'info'), summary, findings } };
 };
 
 // ─── Bridge check (tree-granularity net-vs-copper consistency) ─────────
@@ -3711,8 +3776,8 @@ const schematicCheck: Handler = async (payload) => {
 // `sch check`'s multi-net-wire rule works per SINGLE wire primitive, but when
 // EasyEDA merges two collinear touching stubs of DIFFERENT nets into one tree,
 // the short spans SEVERAL wires — no single wire carries two net names, so the
-// per-wire rule under-reports. bridge-check groups wires into trees by shared
-// vertices (union-find) and aggregates the net names of every netflag/netport
+// per-wire rule under-reports. bridge-check groups actual segments by physical
+// endpoint/T/overlap contact (bare X stays separate) and aggregates wire/marker
 // anchored on that tree:
 //   • len(set(nets)) > 1  → BRIDGE (real short, ERROR)
 //   • nets empty & tree touches a SINGLE pin → ORPHAN (dangling stub, WARN)
@@ -3728,6 +3793,7 @@ interface BridgeTree {
 	flagIds: Array<string>;
 	pins: Array<string>; // "designator:pin"
 	nets: Array<string>;
+	segments?: Array<{ primitiveId: string; segmentIndex: number; rawEncoding: string }>;
 }
 
 const schematicBridgeCheck: Handler = async (payload) => {
@@ -3740,7 +3806,8 @@ const schematicBridgeCheck: Handler = async (payload) => {
 	catch (err) {
 		throw edaError(err, 'Failed to read schematic for bridge check.');
 	}
-	const wireSegs = collectWireSegments((wires ?? []) as Array<{ getState_Line: () => Array<number>; getState_Net?: () => string; getState_PrimitiveId?: () => string }>);
+	if (!Array.isArray(components) || !Array.isArray(wires)) throw new Error('Incomplete bridge component/wire enumeration.');
+	const wireSegs = collectWireSegments(wires);
 	const COINCIDE_TOL = CHECK_EPS * 8;
 
 	// Netflags/netports/netlabels carry the net name we aggregate per tree.
@@ -3750,86 +3817,45 @@ const schematicBridgeCheck: Handler = async (payload) => {
 	for (const c of components ?? []) {
 		let type: string;
 		try { type = String(c.getState_ComponentType?.() ?? ''); }
-		catch { continue; }
+		catch (err) { throw new Error(`Bridge component identity unavailable: ${describeThrown(err)}`); }
 		if (NET_MARKER_TYPES.has(type)) {
 			try {
 				markers.push({ x: c.getState_X(), y: c.getState_Y(), net: String(c.getState_Net?.() ?? ''), primitiveId: String(c.getState_PrimitiveId?.() ?? '') });
 			}
-			catch { /* marker without coords */ }
+			catch (err) { throw new Error(`Bridge marker geometry unavailable: ${describeThrown(err)}`); }
 			continue;
 		}
 		const primitiveId = c.getState_PrimitiveId();
 		let compPins;
 		try { compPins = await eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId(primitiveId); }
-		catch { continue; }
-		if (!compPins || compPins.length === 0) continue;
+		catch (err) { throw new Error(`Bridge pin geometry unavailable: ${describeThrown(err)}`); }
+		if (!Array.isArray(compPins)) throw new Error('Bridge pin API did not return an array.');
+		if (compPins.length === 0) continue;
 		const designator = String(c.getState_Designator?.() ?? '');
 		for (const p of compPins) {
 			try { pins.push({ designator, number: String(p.getState_PinNumber?.() ?? ''), x: p.getState_X(), y: p.getState_Y() }); }
-			catch { /* pin without coords */ }
+			catch (err) { throw new Error(`Bridge pin coordinates unavailable: ${describeThrown(err)}`); }
 		}
 	}
+	if ([...pins, ...markers].some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) throw new Error('Non-finite bridge anchor geometry.');
 
-	// ── Union-find over wires: two wires join a tree when they share a vertex. ──
-	const wireList = wireSegs.length > 0
-		? [...new Map(wireSegs.filter(w => w.wirePrimitiveId).map(w => [w.wirePrimitiveId, w])).keys()]
-		: [];
-	// Vertices per wire primitive id (from every segment endpoint).
-	const wireVerts = new Map<string, Array<[number, number]>>();
-	for (const ws of wireSegs) {
-		if (!ws.wirePrimitiveId) continue;
-		const arr = wireVerts.get(ws.wirePrimitiveId) ?? [];
-		arr.push([ws.seg[0], ws.seg[1]], [ws.seg[2], ws.seg[3]]);
-		wireVerts.set(ws.wirePrimitiveId, arr);
-	}
-	const idx = new Map<string, number>();
-	wireList.forEach((id, i) => idx.set(id, i));
-	const parent = wireList.map((_, i) => i);
-	const find = (a: number): number => { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; } return a; };
-	const union = (a: number, b: number) => { parent[find(a)] = find(b); };
-	for (let i = 0; i < wireList.length; i++) {
-		for (let j = i + 1; j < wireList.length; j++) {
-			const vi = wireVerts.get(wireList[i]) ?? [];
-			const vj = wireVerts.get(wireList[j]) ?? [];
-			const touch = vi.some(a => vj.some(b => Math.hypot(a[0] - b[0], a[1] - b[1]) <= COINCIDE_TOL));
-			if (touch) union(i, j);
-		}
-	}
-
-	// ── Aggregate each tree's wires + anchored flags/pins + net names. ──
-	// Anchoring is point-on-SEGMENT, not vertex-proximity (issue #135): when
-	// EasyEDA merges two overlapping collinear stubs into one wire, a swallowed
-	// flag ends up MID-SPAN — a vertex-only test never anchors it, the tree sees
-	// a single net, and a real short reports clean. Same for pins touched
-	// mid-span by a wire running through them.
-	const treeMap = new Map<number, { wireIds: Set<string>; segs: Array<[number, number, number, number]> }>();
-	for (const id of wireList) {
-		const root = find(idx.get(id)!);
-		const t = treeMap.get(root) ?? { wireIds: new Set<string>(), segs: [] };
-		t.wireIds.add(id);
-		treeMap.set(root, t);
-	}
-	for (const ws of wireSegs) {
-		if (!ws.wirePrimitiveId) continue;
-		const i = idx.get(ws.wirePrimitiveId);
-		if (i === undefined) continue;
-		treeMap.get(find(i))?.segs.push([ws.seg[0], ws.seg[1], ws.seg[2], ws.seg[3]]);
-	}
-	const distToSeg = (px: number, py: number, x0: number, y0: number, x1: number, y1: number): number => {
-		const dx = x1 - x0, dy = y1 - y0;
-		const len2 = dx * dx + dy * dy;
-		if (len2 === 0) return Math.hypot(px - x0, py - y0);
-		let t = ((px - x0) * dx + (py - y0) * dy) / len2;
-		t = Math.max(0, Math.min(1, t));
-		return Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy));
-	};
+	// Physical segment islands, never primitive-ID unions. An anchor at X is
+	// explicitly conductive and cannot use the bare-crossing exception.
+	const treeMap = new Map(physicalWireIslands(wireSegs, [...pins, ...markers]).map((indices, i) => [i, {
+		wireIds: new Set(indices.map(j => wireSegs[j].wirePrimitiveId)),
+		segs: indices.map(j => wireSegs[j].seg),
+		wireNets: new Set(indices.map(j => wireSegs[j].net).filter(Boolean)),
+		sources: indices.map(j => ({ primitiveId: wireSegs[j].wirePrimitiveId, segmentIndex: wireSegs[j].segmentIndex, rawEncoding: wireSegs[j].rawEncoding })),
+	}]));
+	const distToSeg = (px: number, py: number, x0: number, y0: number, x1: number, y1: number): number =>
+		wirePointOnSegment({ x: px, y: py }, [x0, y0, x1, y1]) ? 0 : Number.POSITIVE_INFINITY;
 
 	const trees: Array<BridgeTree> = [];
 	const anchoredMarkers = new Set<string>();
 	for (const t of treeMap.values()) {
 		const onTree = (x: number, y: number) => t.segs.some(s => distToSeg(x, y, s[0], s[1], s[2], s[3]) <= COINCIDE_TOL);
 		const flagIds: Array<string> = [];
-		const nets = new Set<string>();
+		const nets = new Set<string>(t.wireNets);
 		for (const m of markers) {
 			if (!onTree(m.x, m.y)) continue;
 			if (m.primitiveId) { flagIds.push(m.primitiveId); anchoredMarkers.add(m.primitiveId); }
@@ -3841,16 +3867,16 @@ const schematicBridgeCheck: Handler = async (payload) => {
 		}
 		const netList = [...nets];
 		if (netList.length > 1) {
-			trees.push({ kind: 'BRIDGE', wireIds: [...t.wireIds], flagIds, pins: [...new Set(touchedPins)], nets: netList });
+			trees.push({ kind: 'BRIDGE', wireIds: [...t.wireIds], flagIds, pins: [...new Set(touchedPins)], nets: netList, segments: t.sources });
 		}
-		else if (netList.length === 0 && touchedPins.length > 0) {
+		else if (flagIds.length === 0 && touchedPins.length > 0) {
 			// A flagless tree touching 2+ DISTINCT pins is a legal pin-to-pin direct
 			// connection (the net just gets an auto name like $2N1792) — only a tree
 			// stuck on a SINGLE pin is a dangling stub (live 2026-08-12: the LED
 			// direct-wire replacing a face-to-face netport pair was false-flagged).
 			const uniquePins = [...new Set(touchedPins)];
 			if (uniquePins.length < 2) {
-				trees.push({ kind: 'ORPHAN', wireIds: [...t.wireIds], flagIds, pins: uniquePins, nets: netList });
+				trees.push({ kind: 'ORPHAN', wireIds: [...t.wireIds], flagIds, pins: uniquePins, nets: netList, segments: t.sources });
 			}
 		}
 		else if (touchedPins.length === 0) {
@@ -3860,7 +3886,7 @@ const schematicBridgeCheck: Handler = async (payload) => {
 			// wire, so BOTH were structurally blind to this form), or a bare wire tree
 			// with neither flags nor pins (dead copper). netList.length===1 lands here
 			// too — a single-net tree with zero pins contributes nothing electrically.
-			trees.push({ kind: 'ORPHAN_TREE', wireIds: [...t.wireIds], flagIds, pins: [], nets: netList });
+			trees.push({ kind: 'ORPHAN_TREE', wireIds: [...t.wireIds], flagIds, pins: [], nets: netList, segments: t.sources });
 		}
 	}
 
@@ -6448,6 +6474,10 @@ export const schematicPinDisconnect: Handler = async (payload) => {
 	catch (err) {
 		throw edaError(err, 'Failed to read schematic primitives.');
 	}
+	if (!Array.isArray(components) || !Array.isArray(wires)) throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, 'disconnect: component/wire inventory unavailable.');
+	let observed: CheckWireSegment[];
+	try { observed = collectWireSegments(wires); }
+	catch (err) { throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, `disconnect: unknown observed wire geometry; no mutation: ${describeThrown(err)}`); }
 
 	// Resolve the target pin coordinate. Prefer an explicit pinX/pinY, then
 	// designator+pin; else derive it from the located stub's pin-side endpoint
@@ -6475,24 +6505,24 @@ export const schematicPinDisconnect: Handler = async (payload) => {
 		}
 	}
 
-	// A generous tolerance shared with the check rules (grid-snap slop).
-	const TOL = CHECK_EPS * 8;
-	// Endpoints of a wire as [x,y] pairs (first + last vertex).
-	const endpointsOf = (w: { getState_Line: () => Array<number> | Array<Array<number>> }): Array<[number, number]> => {
-		let line;
-		try { line = w.getState_Line(); }
-		catch { return []; }
-		if (!Array.isArray(line) || line.length === 0) return [];
-		const verts: Array<[number, number]> = [];
-		if (Array.isArray(line[0])) {
-			for (const p of line as Array<Array<number>>) verts.push([p[0], p[1]]);
-		}
-		else {
-			const flat = line as Array<number>;
-			for (let i = 0; i + 1 < flat.length; i += 2) verts.push([flat[i], flat[i + 1]]);
-		}
-		if (verts.length === 0) return [];
-		return [verts[0], verts[verts.length - 1]];
+	// Match the physical contact classifier; nearby but separate wires are not stubs.
+	const TOL = WIRE_CONTACT_EPS;
+	// Refuse rich target topology before deriving any ambiguous "opposite end".
+	const targetAnchors: Array<{x:number;y:number}> = [];
+	if (pinX !== undefined && pinY !== undefined) targetAnchors.push({x:pinX,y:pinY});
+	if (flagPrimitiveId) {
+		const flag = components.find(c=>c.getState_PrimitiveId()===flagPrimitiveId);
+		if (flag) targetAnchors.push({x:flag.getState_X(),y:flag.getState_Y()});
+	}
+	if (targetAnchors.some(p=>!Number.isFinite(p.x)||!Number.isFinite(p.y))) throw new ActionError(ErrorCodes.PRECONDITION_REFUSED,'disconnect: target coordinates unavailable.');
+	const candidateIds = new Set(observed.filter(s=>s.wirePrimitiveId===wirePrimitiveId || targetAnchors.some(p=>wirePointOnSegment(p,s.seg))).map(s=>s.wirePrimitiveId));
+	try { assertLegacySimpleWireOperation(observed,candidateIds); }
+	catch(err) { throw new ActionError(ErrorCodes.PRECONDITION_REFUSED,`disconnect: refused before mutation: ${describeThrown(err)}`); }
+	const endpointsOf = (w: { getState_PrimitiveId: () => string }): Array<[number, number]> => {
+		const own=observed.filter(s=>s.wirePrimitiveId===w.getState_PrimitiveId());
+		if(own.length!==1) return [];
+		const s=own[0].seg;
+		return [[s[0],s[1]],[s[2],s[3]]];
 	};
 
 	// Locate the stub wire(s). A pin can host SEVERAL stubs (one per flag, or a
@@ -6558,38 +6588,14 @@ export const schematicPinDisconnect: Handler = async (payload) => {
 		);
 	}
 
-	// Any located wire may be a MERGED tree (EasyEDA fuses touching collinear
-	// wires): its flags can sit on mid-vertices or mid-SPAN, and it may serve
-	// OTHER pins besides the target (issue #137 — deleting it endpoint-blind left
-	// a swallowed flag orphaned and silently disconnected a neighbour pin). So:
-	// collect every vertex + segment of EVERY doomed wire, sweep flags across the
-	// WHOLE polyline set (they lose their host wire either way), and report any
-	// other pin the deletion will disconnect so the caller knows to reconnect it.
+	// A supported straight stub may still serve a mid-span marker or another pin.
+	// Sweep only the decoded segments and report every affected pin. Multi-record
+	// primitives were rejected above, before any destructive operation.
 	const stubPids = new Set(stubWires.map(s => s.pid));
-	const wireSegsAll: Array<[number, number, number, number]> = [];
-	for (const w of wires ?? []) {
-		if (!stubPids.has(String(w.getState_PrimitiveId?.() ?? ''))) continue;
-		let line: Array<number> | undefined;
-		try { line = w.getState_Line() as Array<number>; }
-		catch { continue; }
-		if (Array.isArray(line)) {
-			for (let i = 0; i + 3 < line.length; i += 2) {
-				wireSegsAll.push([line[i], line[i + 1], line[i + 2], line[i + 3]]);
-			}
-		}
-	}
-	const distToSegD = (px: number, py: number, x0: number, y0: number, x1: number, y1: number): number => {
-		const dx = x1 - x0, dy = y1 - y0;
-		const len2 = dx * dx + dy * dy;
-		if (len2 === 0) return Math.hypot(px - x0, py - y0);
-		let t = ((px - x0) * dx + (py - y0) * dy) / len2;
-		t = Math.max(0, Math.min(1, t));
-		return Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy));
-	};
-	const onWire = (x: number, y: number): boolean => {
-		if (wireSegsAll.length > 0) return wireSegsAll.some(s => distToSegD(x, y, s[0], s[1], s[2], s[3]) <= TOL);
-		return stubWires.some(sw => sw.ends.some(e => Math.hypot(e[0] - x, e[1] - y) <= TOL));
-	};
+	try { assertLegacySimpleWireOperation(observed,stubPids); }
+	catch(err) { throw new ActionError(ErrorCodes.PRECONDITION_REFUSED,`disconnect: refused before mutation: ${describeThrown(err)}`); }
+	const wireSegsAll = observed.filter(s=>stubPids.has(s.wirePrimitiveId)).map(s=>s.seg);
+	const onWire = (x: number, y: number): boolean => wireSegsAll.some(s => wirePointOnSegment({x,y},s));
 
 	const NET_MARKER_TYPES = new Set(['netflag', 'netport', 'netlabel', 'short_symbol']);
 	const flagIds: Array<string> = [];
@@ -6597,25 +6603,28 @@ export const schematicPinDisconnect: Handler = async (payload) => {
 	for (const c of components ?? []) {
 		let type: string;
 		try { type = String(c.getState_ComponentType?.() ?? ''); }
-		catch { continue; }
+		catch (err) { throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, `disconnect: component identity unavailable: ${describeThrown(err)}`); }
 		if (NET_MARKER_TYPES.has(type)) {
 			let cx: number;
 			let cy: number;
 			try { cx = c.getState_X(); cy = c.getState_Y(); }
-			catch { continue; }
+			catch (err) { throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, `disconnect: marker coordinates unavailable: ${describeThrown(err)}`); }
+			if(!Number.isFinite(cx)||!Number.isFinite(cy)) throw new ActionError(ErrorCodes.PRECONDITION_REFUSED,'disconnect: marker coordinates unavailable.');
 			if (onWire(cx, cy)) flagIds.push(String(c.getState_PrimitiveId?.() ?? ''));
 			continue;
 		}
 		// Component pins riding the same wire — the deletion disconnects them too.
 		let compPins;
 		try { compPins = await eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId(c.getState_PrimitiveId()); }
-		catch { continue; }
+		catch (err) { throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, `disconnect: pin geometry unavailable: ${describeThrown(err)}`); }
+		if(!Array.isArray(compPins)) throw new ActionError(ErrorCodes.PRECONDITION_REFUSED,'disconnect: pin inventory unavailable.');
 		const cDesig = String(c.getState_Designator?.() ?? '');
 		for (const p of compPins ?? []) {
 			let px: number;
 			let py: number;
 			try { px = p.getState_X(); py = p.getState_Y(); }
-			catch { continue; }
+			catch (err) { throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, `disconnect: pin coordinates unavailable: ${describeThrown(err)}`); }
+			if(!Number.isFinite(px)||!Number.isFinite(py)) throw new ActionError(ErrorCodes.PRECONDITION_REFUSED,'disconnect: pin coordinates unavailable.');
 			if (pinX !== undefined && pinY !== undefined && Math.hypot(px - pinX, py - pinY) <= TOL) continue; // the target pin itself
 			if (onWire(px, py)) alsoDisconnectedPins.push(`${cDesig}:${String(p.getState_PinNumber?.() ?? '')}`);
 		}

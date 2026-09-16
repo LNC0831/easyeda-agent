@@ -22,11 +22,9 @@ func composeOriginalRefsFixture(refs []string) schCompositionSource {
 		m.Placements = append(m.Placements, p.Placements...)
 		m.Wires = append(m.Wires, p.Wires...)
 		m.Flags = append(m.Flags, p.Flags...)
-		if i == 0 {
-			canonical.CoreComponents = []string{s.Connectivity.Components[i].ID}
-		} else {
-			canonical.PeripheralComponents = append(canonical.PeripheralComponents, s.Connectivity.Components[i].ID)
-		}
+		// These are independent copies, not dedicated peripherals. Keep the
+		// fixture about ref spelling rather than inventing disconnected ownership.
+		canonical.CoreComponents = append(canonical.CoreComponents, s.Connectivity.Components[i].ID)
 	}
 	s.Modules = []schCompositionModule{m}
 	s.Connectivity.Modules = []connectivity.Module{canonical}

@@ -2,7 +2,9 @@
 
 新设计与整页重建使用 1.4 数据路径。数据契约见 [schematic-data.md](schematic-data.md)，
 坐标、紧凑标题与存量工具边界见 [schematic-placement.md](schematic-placement.md)。
-本流程不要求先运行 `autolayout` 或按固定分区拆页。
+本流程遵守 [数据驱动架构基准](schematic-data.md#数据驱动架构基准)，
+不要求先运行 `autolayout` 或按固定分区拆页。检查失败回改源数据/采集/算法后重算，
+不是转为现场逐件试摆；每次恢复先找到源输入和生成记录，不能仅从上次截图继续。
 
 ## 1. 准备电路与测量数据
 
@@ -31,6 +33,16 @@ easyeda sch sheet-geometry --project <project> --json
 修改阅读流后重新生成 pages，不能直接沿用仅通过碰撞检测的旧 sheetPosition。
 用户只授权预览时止于离线结果，不执行下文 Apply。诊断模式不能替代完整候选；
 保留源数据、参数、源码提交和输出哈希，使相同输入能重现同一图面。
+复杂直连网络在源输入顶层使用可选
+`routing:{"maxExpandedNodes":200000,"maxReroutes":4}`；省略即采用这两个默认值。
+该预算按 zone 隔离，5 raw 方向网格的 40/80/160/320 raw 包络扩展、全部 direct 网络、
+撤线重布和允许姿态尝试共同消费，不能在失败后重置。先保存 `--report`：它必须能重放
+失败局部布局、未连接的指定物理线岛、候选路径摘要与逐边拒绝证据，但诊断数据不能交给
+compose/Apply。报告为预算耗尽或限定范围无路径只表示有界失败；修算法/源约束后从本阶段
+重算。失败命令不得生成或覆盖几何输出。
+direct 放置前沿、整网撤线重布和阻挡器件/attachment 刚体迁移都由同一内核执行；迁移先试
+主轴向外 5/10 raw，再按 5 raw 扩展到 40 raw。已合并线树可从真实中段/T/端点垂直接出
+命名，但命名成功不能反向证明 direct 已连接。检查报告中的指定线岛合并证据仍是硬门。
 用户确认拆出完整功能子电路时，先仅修改成员归属与边界绘图策略，保留 pin→net/NC；
 需要相邻阅读时声明 placement.samePageAs 与 preferAdjacent，再走相同完整出图链路。
 比较拆前/拆后的主区及子区框面积、整页总框面积、总线长、页数与其他区几何不变量。
@@ -86,15 +98,23 @@ Apply 负责清页残留检查、放置后 ID/Role 绑定、接线前实测 pin/
 回读。超时或 `partial` 先核实实际状态，不能盲目重复 place/connect。若只补框标题，
 用 `sch frame apply/check`；它只操作自己登记的图元。
 
+进入 Apply 前检查 layout 报告的末态分类必须为成功，并确认所有 direct 网络的指定源/目标
+线岛已真实合并、无剩余失败线岛；`data-missing`、`expanded-node-budget-exhausted`、
+`no-path-within-bounds`、`final-validation-failed` 任一存在都停止。dry-run 也不能消费
+diagnostic/blocked/partial 布局；先修复源数据、采集或算法，再重新生成完整受保护队列。
+
 ## 4. 验证代码转换效果
 
 1. 对照目标 IR 与实际 connectivity：组件身份、pin→net、NC 必须一致。多页逐页读取，
    检查迁移后的页面归属和全工程位号；离线 diff 通过不能替代实际写入证明。
 2. 逐页 `sch gate --strict --doc <page>`，确认所有阶段完成且 verdict 为 `pass`。
    `blocked` 先处理连接/页面；未执行的 DRC 等阶段必须补跑。
-3. `sch frame check` 核验矩形、标题、颜色、虚线及实际文本净距，再用 `sch export-image`
-   检查外置位号/型号、方向和阅读顺序。视觉问题应还原成源数据或算法规则修复。
+3. `sch frame check` 核验矩形、标题、颜色、虚线及必检文字净距；另对实际数据检查
+   核心/外围归属、直连保持、位号入框和遮挡。型号/参数等非位号属性不参与布局检查。
+   `sch export-image` 仅辅助审阅；若发现漏检，先补原始数据采集、规则和回归再重算，
+   不能用人工看图补签缺测项。覆盖不足不得称完整通过。
 4. `sch save` 返回 `saved:true`。保留输入、生成队列、回读和验证报告，报告仍未覆盖的限制。
 
 只整理已有连线的小范围区域时，可按 [schematic-placement.md](schematic-placement.md)
-选带连接的移动工具；仍须保存前后 topology/NC 对照。不要用只移动器件的工具替代连接迁移。
+选带连接的移动工具；先记录源目标与变更，完成后同步源数据并保存前后 topology/NC/几何对照。
+未闭合可重复生成链不能记为算法验收通过。不要用只移动器件的工具替代连接迁移。

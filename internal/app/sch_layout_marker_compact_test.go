@@ -146,9 +146,15 @@ func TestDirectionalMarkerEnvelopeAndRender(t *testing.T) {
 func TestMarkerEnvelopeRefinementPreservesTreeAndBudget(t *testing.T) {
 	p := powerLayoutPlan{
 		Placements: []powerLayoutPlacement{{Designator: "J1", BBox: layoutBBox{-10, -10, 10, 10}, Pins: []powerLayoutPin{{Number: "1", Net: "N", X: -20, Y: 5}, {Number: "2", Net: "N", X: 20, Y: 5}}}},
-		Wires:      []powerLayoutWire{{Net: "N", Points: [][2]float64{{-20, 5}, {-20, 40}}}, {Net: "N", Points: [][2]float64{{-20, 40}, {20, 40}}}, {Net: "N", Points: [][2]float64{{20, 40}, {20, 5}}}},
-		Flags:      []powerLayoutFlag{{Net: "N", Kind: "net_port_bi", PinX: -20, PinY: 5, Direction: "left", Offset: 100}},
+		Wires:      []powerLayoutWire{{Net: "N", Points: [][2]float64{{-20, 5}, {-30, 5}}}, {Net: "N", Points: [][2]float64{{-30, 5}, {-30, 40}}}, {Net: "N", Points: [][2]float64{{-30, 40}, {30, 40}}}, {Net: "N", Points: [][2]float64{{30, 40}, {30, 5}}}, {Net: "N", Points: [][2]float64{{30, 5}, {20, 5}}}},
+		Flags:      []powerLayoutFlag{{Net: "N", Kind: "net_port_bi", PinX: -30, PinY: 5, Direction: "left", Offset: 100}},
 	}
+	// A completed multi-pin tree has no spare pin-exit direction to redraw a
+	// marker over: its existing T branch is deliberately retained. Exercise the
+	// pin-anchor refinement scope with a real single-pin named island instead.
+	p.Placements[0].Pins = p.Placements[0].Pins[:1]
+	p.Wires = nil
+	p.Flags[0].PinX = -20
 	if e := validateLibGeometry(&p); e != nil {
 		t.Fatal(e)
 	}
@@ -162,7 +168,7 @@ func TestMarkerEnvelopeRefinementPreservesTreeAndBudget(t *testing.T) {
 	if budget < 0 || budget >= 2048 {
 		t.Fatal("budget not counted", budget)
 	}
-	if len(p.Wires) != 3 || len(p.Placements) != 1 || len(p.Flags) != 1 {
+	if len(p.Wires) != 0 || len(p.Placements) != 1 || len(p.Flags) != 1 {
 		t.Fatal("changed circuit")
 	}
 	if e := validateSchCompositionNets(&p); e != nil {

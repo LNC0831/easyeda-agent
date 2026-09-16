@@ -1,11 +1,16 @@
 # 原理图功能支持全景(CLI 视角)
 
 `easyeda sch` 域的**当前能力清单 + 待支持路线**。定位:让 AI agent(或人)可以完全通过
-typed CLI 操作嘉立创EDA专业版的原理图——每个动作可观测、可校验、可回滚推理,不依赖 GUI 手工。
+typed CLI 操作嘉立创EDA专业版的原理图——每个动作可观测、可校验；写入不具备事务回滚。
+
+设计、布局、检查和修复统一遵守
+[数据驱动架构基准](../../skills/easyeda-agent/references/schematic-data.md#数据驱动架构基准)。
+下面的存量命令是能力目录，不是要求逐个执行的主流程；fix 建议须回写源数据并重新求解，
+不能照抄现场挪件后就称算法闭环通过。
 
 > 动作目录的机器可读真值是 `make actions` / `easyeda actions`;本文是**人读的功能地图**,
 > 按「AI 操作原理图需要什么」组织。设计流程(何时用哪个命令)见
-> [`skills/easyeda-agent/references/design-flow.md`](../skills/easyeda-agent/references/design-flow.md) S0–S6。
+> [`skills/easyeda-agent/references/design-flow.md`](../../skills/easyeda-agent/references/design-flow.md) S0–S6。
 
 ## 一、已支持(按功能域)
 
@@ -30,7 +35,7 @@ typed CLI 操作嘉立创EDA专业版的原理图——每个动作可观测、�
 | 引脚出线+标志 | `sch connect` | pin → 短 stub → netflag/netport,`--pin U1:5` 或 `--x/--y` 二选一定位,显式方向/offset;自动补偿平台「旋转存储取负」的坑 |
 | 智能连接 | `sch autoconnect` | **打分器**自选方向/offset:碰撞/穿件/图签/fanout 通道全几何成本,含 **netport 竖排折叠惩罚**(密集引脚列不再把标签翻竖);幂等(已连跳过),`--replace` 换网 |
 | 断开 | `sch disconnect` | connect 的逆操作:stub+flag 成对删(免孤儿桩) |
-| NC 标记 | `sch no-connect` | 引脚非连接标识(check 的 floating-pin 出的清单可直接喂) |
+| NC 标记 | `sch no-connect` | 仅落实源设计中明确不用的物理脚；不能将 floating-pin 清单自动改为 NC 来消警 |
 | 网表 | `sch netlist` / `sch read` | 导出网表 / 一次调用语义快照(器件+网络+检查) |
 
 ### 3. 布局与整理
@@ -38,6 +43,13 @@ typed CLI 操作嘉立创EDA专业版的原理图——每个动作可观测、�
 | 能力 | 命令 | 说明 |
 |---|---|---|
 | 本地设计对账 | `sch design-diff expected.json actual.json --exit-code` | 按稳定ID核对器件、引脚、网、几何；两份完整compose计划还比较导线、框和标题，报告覆盖范围及未验证项 |
+| 显式核心/外围区内求解 | `sch layout-plan --zones --from ... --out ...` | 连接/几何、zone 所有权、attachments 与策略 → 完整区内候选；任一区失败不输出完整结果 |
+| 核心移动/单脚标签修复 | `sch layout-edit --source ... --page ... --snapshot ... (--move-core ID --to X,Y \| --repair-pin ID:PIN) --out ... [--playbook ...]` | 从保留源与新鲜快照生成目标；不直接写页面。核心固定目标后可重算本区，单脚修复生成作用域 playbook |
+| 完整区域合页 | `sch layout-sheet-plan --from ... --out ...` | 只选择/平移合法完整候选，统一 spacing、Z 型流和同页约束，不拆外围 |
+| 固定数据渲染 | `sch layout-render --from ... --out ...` | 校验并转译同一目标，不补线、不改坐标；不证明现场已 Apply |
+| 已选页固定转换 | `sch compose --layout-page page.json --from ... --before ... --playbook ...` | 保持已确认的区内/整页几何及 spacing，生成受保护队列 |
+| 通用求解诊断 | `sch layout-plan --from input.json --out layout.json --report report.json [--zones]` | 源哈希、算法版本、阶段及结构化冲突；失败非零、不输出半计划，有限搜索失败不称全局无解 |
+| 已有实例无损重排（dev.6 开发验证） | `sch compose --replace --preserve-instances --layout-page page.json --from ... --before ... --playbook ...` | 保留原 primitiveId/uniqueId/参数；只重算绘制内容，源身份/属性与末态均检查；开发能力不等于现场验收通过 |
 | Lib 内部计算 | `sch lib-layout --from ... --out ...` | 既定电路图与实测姿态→局部位置、短线和电源地；有界搜索，输出compose输入 |
 | 单页 Lib 组合 | `sch compose --from ... --out ... --before ... --playbook ... [--replace]` | 保留原位号；完整IR与模块几何→端子直线错长、紧凑标题、Z字紧凑框排布、固定10 raw边距（实测sheetBorder可核验内框净距）；实际引脚/NC/bbox/导线路径回读。跨页位号唯一才许重建；[范围](../schematic-page-composition.md) |
 | 固定 LDO 数据规划 | `sch power-layout --from ... --out ... --playbook ...` | 实测几何→器件/引脚/线/电源符号/模块框;标题择上下空档压缩包络后,默认左上 Z 字起排、同行顶齐、每框保持自身高度;输入可带实测 `titleMetrics`;`--frames-only` 只验证并补框 |
@@ -51,7 +63,7 @@ typed CLI 操作嘉立创EDA专业版的原理图——每个动作可观测、�
 | 组内布局计算 | `sch group tidy` | **三层体系 Group 层**:pattern auto/power-updown/signal-row——双电源旗电容自动竖放+上电下地+**文字朝外**(真机校准 rotation 表);实测 pin 二义消解、stale 双读、未建模第三连接拒绝、连带断开即错、自检红即逐步回滚 |
 | 功能区刚移 | `sch zone move` | **Zone 层**:区内组+散件+桩+旗+note 整体平移;**全区一份展开**(区内直连线随行,跨区线才留守);出界/压图签硬拒、压他区警告;分区框自动重画(重画前指纹 settle) |
 | 组间叠加布局 | `sch zone tidy` | **Zone 层**:区内组当刚体排布(锚组+上下堆叠,hGap 默认 117 可调);装不下给最小尺寸诊断不硬塞;双认领图元差集(正/回滚对称);自检红逆序回滚 |
-| 布局质量分 | `sch layout-score` | **五维诊断**:标签折叠 / 标签反向(背离核心)/ 外围贴芯片距离 / 长链散乱 / 框贴合——逐项归因**带可执行 fix 命令**(AI 照抄即修);诊断视角,门仍是 layout-lint+check |
+| 布局质量分 | `sch layout-score` | 五维诊断与归因；proximity 不等于外围所有权硬门，缺测不算通过。fix 提示用于修改源约束，不照抄现场试摆；实际覆盖见 Skill |
 
 ### 4. 页面组织与分区
 
@@ -110,8 +122,8 @@ typed CLI 操作嘉立创EDA专业版的原理图——每个动作可观测、�
 `--x/--y` 裸坐标能力)、`--ids` 统一 CSV、modify 快捷 flag 对齐 place。旧的 JSON 数组 `--ids` 与
 `sch delete` 命令已移除(不留兼容)。
 
-**三层布局体系**(Sheet→Zone→Group 每层 tidy+move)设计契约见
-[`docs/schematic-layout-hierarchy.md`](../schematic-layout-hierarchy.md)。
+**现行架构是区内/纸张两层数据计算**，见 [架构](../architecture.md)。
+[三层 tidy/move 文档](../schematic-layout-hierarchy.md)仅保留历史及存量维护背景。
 
 ## 二、待支持 / 路线(按 AI 可操作性缺口排序)
 
@@ -121,22 +133,22 @@ typed CLI 操作嘉立创EDA专业版的原理图——每个动作可观测、�
 > v1 范围:group-move 自动展开附着物 + align/distribute 刚体保护;autolayout /
 > autoplace-free 只警告不保组内几何(组感知重排是后续项)。
 
-### 1. `sch layout-score`(实现中)
+### 1. 检查覆盖与源数据闭环
 
-五维布局质量打分(折叠/反向/贴芯片/长链/框贴合),逐项归因带可执行 fix 命令——
-「识别出来 + AI 知道怎么修」。落地后接 **sch refine**(打分驱动的自动精修环,对齐 `pcb refine`)。
+`sch layout-score` 已有诊断能力，不等于完整自动精修。外围所有权/直连、位号与框的完整
+原始几何覆盖，以及源输入到现场的溯源须分别举证；未覆盖必检项不能靠截图补签。
+型号/参数等非位号属性文字排除页面碰撞和框包络，位号保留。
 
-### 2. 布局引擎 v2:外围贴芯片 + 顺信号流
+### 2. 显式归属与自动语义识别的边界
 
-block-apply 无模板时的 fallback 从「per-row 等分栅格」升级为:
-**等分只定核心芯片位置;外围件贴自家核心上下排布**,件的轴向顺服务引脚的出线方向
-(块 `internal_nets` 可推导「谁服务谁」),相邻件间距 ≥117(两个相向水平 netport 标签的实测最小距)。
-真机已按此规则验证:标签全部自然水平、框贴合、可读性达标。
+通用 `layout-plan` 已沿连接计算核心/外围位置；zone 所有权和共享外围归属仍需源输入
+明确声明，不把局部网络启发式当作自动理解整个功能电路。旧 block fallback 不定义新主链。
 
-### 3. 分区框 content 纳入 note/flag
+### 3. 框与必检几何
 
-框几何目前只算器件 bbox——模块的说明文字和引脚 netflag/netport 会落在框外。
-计划把「归属该模块的 note + 成员件的 marker」并进 content 再画框。
+当前 compose/frame 已消费器件、导线、标记、标题占位，不是只算器件 bbox。
+必检范围与现场测量限制以 [Skill 检查覆盖](../../skills/easyeda-agent/references/schematic.md#检查覆盖边界原理图验收)
+为准；不能以预测包络代替真实回读。
 
 ### 4. zone-draw 的 stale bbox
 
@@ -150,7 +162,7 @@ connect/autoconnect 只有端点挂 netflag/netport 一种表达;同模块内「
 
 ---
 
-*本文与 [`docs/FEATURES.md`](./FEATURES.md)(全域 action 清单+roadmap)互补:那边是动作粒度,
+*本文与 [`docs/FEATURES.md`](../FEATURES.md)(全域 action 清单+roadmap)互补:那边是动作粒度,
 这边是「AI 操作原理图」的功能域视角。改动原理图相关命令后请同步本文。*
 
 1.4 不再提供独立 `sch note` 命令,也不以 Notes 的存在或归属阻塞检查。模块框标题由呈现数据转换生成,粉色字高 0.2 inch(20单位),方框使用虚线。标题放在上方或下方的合法空档,不固定保留顶部标题带。数据字段与转换验收见[模块框与标题](../schematic-frame-conversion.md)。普通文字读取仍使用 `sch text-list`。

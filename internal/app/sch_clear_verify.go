@@ -1,6 +1,35 @@
 package app
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+	"sort"
+)
+
+func verifySchPreservedClearResult(result map[string]any, ids []string) error {
+	if result["preserveParts"] != true || result["instancesPreserved"] != true {
+		return fmt.Errorf("part-preserving clear was not verified")
+	}
+	raw, ok := result["preservedPartIds"].([]any)
+	if !ok {
+		return fmt.Errorf("preserved part inventory unavailable")
+	}
+	got := []string{}
+	for _, v := range raw {
+		s, ok := v.(string)
+		if !ok || s == "" {
+			return fmt.Errorf("invalid preserved part identity")
+		}
+		got = append(got, s)
+	}
+	want := append([]string{}, ids...)
+	sort.Strings(want)
+	sort.Strings(got)
+	if !slices.Equal(got, want) {
+		return fmt.Errorf("preserved part set differs from explicit target")
+	}
+	return nil
+}
 
 // Missing enumeration classes or warnings are unknown state, never an empty page.
 func verifySchClearResult(result map[string]any, requireEmpty bool) error {

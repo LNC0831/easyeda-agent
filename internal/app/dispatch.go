@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zhoushoujianwork/easyeda-agent/internal/protocol"
 )
 
 const (
@@ -844,6 +846,13 @@ func postAction(cfg *appConfig, action, window string, payload any, timeout time
 		timeout = defaultActionTimeout
 	}
 	timeout = schematicIdentityReadTimeout(action, payload, timeout)
+	actionTimeout := timeout
+	// Schematic mutation guards take fresh geometry before AND after the write.
+	// Keep the previous action budget plus bounded read budgets; do not steal the
+	// write's last seconds and misreport a landed mutation as a timeout.
+	if protocol.SchematicGeometryGuarded(action) {
+		timeout += 2 * protocol.SchematicGeometryReadTimeout(actionTimeout)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -868,7 +877,7 @@ func postAction(cfg *appConfig, action, window string, payload any, timeout time
 	// (budget - grace) so it answers with a structured DISPATCH_FAILED *before*
 	// this HTTP client times out — instead of both sides hanging to their own
 	// independent deadlines.
-	body["timeoutMs"] = int(timeout / time.Millisecond)
+	body["timeoutMs"] = int(actionTimeout / time.Millisecond)
 	if window != "" {
 		body["windowId"] = window
 	}

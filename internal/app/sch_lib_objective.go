@@ -13,6 +13,20 @@ func libNetPriority(policy string) int {
 	}
 }
 
+// Within the signal class, direct nets are mandatory physical trees while a
+// module_port may remain as separately named islands. Route the hard contract
+// before optional local joins can consume its escape corridors.
+func libSignalPolicyPriority(policy string) int {
+	switch policy {
+	case "direct":
+		return 0
+	case "module_port":
+		return 1
+	default:
+		return 2
+	}
+}
+
 func libPeripheralPriority(c powerLayoutPlacement, policies map[string]string) int {
 	connected := false
 	for _, p := range c.Pins {

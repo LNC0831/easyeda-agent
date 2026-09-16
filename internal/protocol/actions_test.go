@@ -92,3 +92,20 @@ func TestComponentsListDocumentsReadOnlyPreflightContract(t *testing.T) {
 		}
 	}
 }
+
+func TestProtectedPinRepairIsCataloguedAsMutatingGeometryAction(t *testing.T) {
+	var found *ActionSpec
+	for _, action := range AllActions() {
+		if action.Name == "schematic.pin.repair_marker" {
+			copy := action
+			found = &copy
+			break
+		}
+	}
+	if found == nil || !found.Mutates || !found.NeedsWindow || found.Domain != DomainSchematic {
+		t.Fatalf("protected repair catalog contract missing: %+v", found)
+	}
+	if !SchematicGeometryGuarded(found.Name) {
+		t.Fatal("protected repair lacks CLI/daemon geometry timeout sizing")
+	}
+}

@@ -114,6 +114,13 @@ func (p schFrameDocument) validate() error {
 			return fmt.Errorf("frame %s title anchor/height is outside its rectangle", f.ID)
 		}
 	}
+	for i, a := range p.Frames {
+		for _, b := range p.Frames[i+1:] {
+			if a.Rect.MinX < b.Rect.MaxX && a.Rect.MaxX > b.Rect.MinX && a.Rect.MinY < b.Rect.MaxY && a.Rect.MaxY > b.Rect.MinY {
+				return fmt.Errorf("partition-overlap: frames %s and %s overlap; replan complete zones before applying", a.ID, b.ID)
+			}
+		}
+	}
 	return nil
 }
 

@@ -12,7 +12,7 @@ import (
 )
 
 func newSchLayoutPlanCmd(stdout io.Writer) *cobra.Command {
-	var from, out string
+	var from, out, report string
 	var zones bool
 	c := &cobra.Command{Use: "layout-plan", Short: "Plan a measured component set offline without Lib or project metadata", Long: `Compute local placements, wires, markers and score from schemaVersion:1,
 coreComponentId, components:[{id,measurement,pinStates?,allowedRotations?}], netPolicies keyed by
@@ -34,8 +34,16 @@ optimization request isolates per-zone budgets, even without unified spacing.
 Zone output includes variants:[{id,layout,contentBounds,frame}], selectedVariantId.
 Pass the complete packet to layout-sheet-plan --flow z for bounded shape selection.
 No library UUID, Lib membership, project, sheet or daemon required. No Apply.
+Optional --report writes machine-readable diagnostics on success or failure,
+including input SHA-256, phase and structured search conflicts when available.
+Failure remains nonzero and never emits a partial layout. A bounded search failure
+is not a proof of global infeasibility. Report/input/output paths must be distinct.
+Optional routing:{maxExpandedNodes?:200000,maxReroutes?:4} controls the shared
+per-zone 5-raw directional routing budget. Values are respectively 1..5000000
+and 1..32. Straight/simple routes remain fast paths; maze routing expands the
+content envelope by 40,80,160,320 raw without resetting the node budget.
 With --zones: input schemaVersion, components, netPolicies, zones, optional
-attachments/maxCandidates/spacing/optimization. Optional spacing is the shared zone inner,
+attachments/maxCandidates/spacing/optimization/routing. Optional spacing is the shared zone inner,
 page and inter-zone minimum clearance (>=10 raw, 5-raw grid), including stroke
 clearance; forwarded unchanged to the sheet planner. Legacy defaults otherwise.
 In unified spacing mode maxCandidates is a per-zone cap, so earlier zones cannot
@@ -48,31 +56,52 @@ Output contains independent local layouts/contentBounds and compact frame plans,
 not whole-page packing or rendered frames. Add identity/sheet evidence before compose/Apply.
 
 Example:
-  easyeda sch layout-plan --from measured-set.json --out local-geometry.json`, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+  easyeda sch layout-plan --from measured-set.json --out local-geometry.json --report report.json`, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) (runErr error) {
 		if from == "" {
 			return fmt.Errorf("--from is required")
 		}
+		if err := schLayoutReportPaths(from, out, report); err != nil {
+			return err
+		}
+		phase := "read"
+		var source []byte
+		var result any
+		defer func() {
+			if report != "" {
+				if err := writeSchLayoutReport(report, source, phase, zones, result, runErr); err != nil {
+					if runErr != nil {
+						runErr = fmt.Errorf("%w; diagnostic report could not be written: %w", runErr, err)
+					} else {
+						runErr = fmt.Errorf("layout emitted but diagnostic report could not be written: %w", err)
+					}
+				}
+			}
+		}()
 		raw, err := os.ReadFile(from)
 		if err != nil {
 			return err
 		}
-		var result any
+		source = raw
+		phase = "decode"
 		if zones {
 			var input SchematicZonesInput
 			input, err = decodeSchematicZonesInput(raw)
 			if err == nil {
+				phase = "solve"
 				result, err = PlanSchematicZones(input)
 			}
 		} else {
 			var input SchematicLayoutInput
 			input, err = decodeSchematicLayoutInput(raw)
 			if err == nil {
+				phase = "solve"
 				result, err = PlanSchematicLayout(input)
 			}
 		}
 		if err != nil {
 			return err
 		}
+		phase = "emit"
 		raw, err = json.MarshalIndent(result, "", "  ")
 		if err != nil {
 			return err
@@ -94,6 +123,7 @@ Example:
 	c.Flags().StringVar(&from, "from", "", "measured component-set JSON, without Lib metadata")
 	c.Flags().BoolVar(&zones, "zones", false, "plan explicitly owned per-core zones; unified spacing isolates per-zone budgets")
 	c.Flags().StringVar(&out, "out", "", "write local geometry only after validation; defaults to stdout")
+	c.Flags().StringVar(&report, "report", "", "write separate machine-readable diagnostics, including failed search evidence; failure still exits nonzero")
 	return c
 }
 
@@ -136,6 +166,9 @@ func decodeSchematicLayoutInput(raw []byte) (SchematicLayoutInput, error) {
 	var fields map[string]json.RawMessage
 	_ = json.Unmarshal(raw, &fields)
 	if err := validateLayoutOptimizationJSON(fields); err != nil {
+		return input, err
+	}
+	if err := validateSchematicRoutingJSON(fields); err != nil {
 		return input, err
 	}
 	require := func(raw json.RawMessage, where string, keys ...string) error {
@@ -195,6 +228,26 @@ func decodeSchematicLayoutInput(raw []byte) (SchematicLayoutInput, error) {
 		}
 	}
 	return input, nil
+}
+
+func validateSchematicRoutingJSON(fields map[string]json.RawMessage) error {
+	raw, ok := fields["routing"]
+	if !ok {
+		return nil
+	}
+	var options map[string]json.RawMessage
+	if string(raw) == "null" || json.Unmarshal(raw, &options) != nil {
+		return fmt.Errorf("routing requires an object")
+	}
+	for name, bounds := range map[string][2]int{"maxExpandedNodes": {1, 5000000}, "maxReroutes": {1, 32}} {
+		if value, ok := options[name]; ok {
+			var n int
+			if string(value) == "null" || json.Unmarshal(value, &n) != nil || n < bounds[0] || n > bounds[1] {
+				return fmt.Errorf("routing.%s must be %d..%d", name, bounds[0], bounds[1])
+			}
+		}
+	}
+	return nil
 }
 
 func validateLayoutOptimizationJSON(fields map[string]json.RawMessage) error {

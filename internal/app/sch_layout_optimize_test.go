@@ -11,8 +11,10 @@ import (
 func schematicOptimizationFixture() SchematicLayoutInput {
 	in := standaloneLayoutFixture()
 	in.Optimization = &SchematicLayoutOptimization{}
+	// A wide, shallow symbol with vertical terminals has a genuinely useful
+	// approved rotation even when both pin exits must remain outward.
 	in.Components[1].Measurement = SchematicPlacement{Designator: "R1", X: 300, Y: 100,
-		BBox: SchematicBox{295, 80, 305, 120}, Pins: []SchematicPin{{Number: "1", Net: "SUPPLY", X: 300, Y: 130}, {Number: "2", Net: "RETURN", X: 300, Y: 70}}}
+		BBox: SchematicBox{240, 95, 360, 105}, Pins: []SchematicPin{{Number: "1", Net: "SUPPLY", X: 300, Y: 115}, {Number: "2", Net: "RETURN", X: 300, Y: 85}}}
 	in.Components[1].AllowedRotations = []float64{0, 90, 180, 270}
 	return in
 }

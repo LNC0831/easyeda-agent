@@ -158,7 +158,11 @@ func validateSchematicOptimizationEvidence(in SchematicLayoutInput, r *Schematic
 	return validateSchCompositionNets(&p)
 }
 
-func optimizeSchematicLayout(in SchematicLayoutInput, baseline *SchematicLayoutResult, measured map[string]powerLayoutPlacement, members []string, hints map[string]SchematicLayoutPeripheral, opts SchematicLayoutOptimization, allowed map[string][]float64, budget *int) *SchematicLayoutResult {
+func optimizeSchematicLayout(in SchematicLayoutInput, baseline *SchematicLayoutResult, measured map[string]powerLayoutPlacement, members []string, hints map[string]SchematicLayoutPeripheral, opts SchematicLayoutOptimization, allowed map[string][]float64, budget *int, routingArg ...*schematicRoutingContext) *SchematicLayoutResult {
+	var routing *schematicRoutingContext
+	if len(routingArg) > 0 {
+		routing = routingArg[0]
+	}
 	baseline.AllowedRotations = allowed
 	baseline = cloneSchematicOptimizationResult(baseline)
 	pool := []*SchematicLayoutResult{baseline}
@@ -252,7 +256,7 @@ func optimizeSchematicLayout(in SchematicLayoutInput, baseline *SchematicLayoutR
 							fixed[i] = plRotate(c, int(math.Mod(angle-c.Rotation+360, 360)/90))
 						}
 					}
-					if finished, err := finishSchematicOptimizationPlacements(fixed, in.NetPolicies, limit, baseline); err == nil {
+					if finished, err := finishSchematicOptimizationPlacementsWithRouting(fixed, in.NetPolicies, limit, routing, baseline); err == nil {
 						p := powerLayoutPlan{Placements: finished.Placements, Wires: finished.Wires, Flags: finished.Flags}
 						if libCandidateScore(&p)[0] <= lengthCap {
 							return finished, nil
@@ -267,7 +271,7 @@ func optimizeSchematicLayout(in SchematicLayoutInput, baseline *SchematicLayoutR
 						}
 						posed[member] = plRotate(original, int(math.Mod(target-original.Rotation+360, 360)/90))
 					}
-					return solveSchematicLayout(in, posed, members, hints, limit)
+					return solveSchematicLayout(in, posed, members, hints, limit, routing)
 				}, initialRemaining/4)
 			}
 		}
@@ -312,7 +316,7 @@ func optimizeSchematicLayout(in SchematicLayoutInput, baseline *SchematicLayoutR
 						dx, dy = 0, delta
 					}
 					p.Placements[index] = plTranslate(c, dx, dy)
-					return finishSchematicOptimizationPlacements(p.Placements, in.NetPolicies, limit, baseline)
+					return finishSchematicOptimizationPlacementsWithRouting(p.Placements, in.NetPolicies, limit, routing, baseline)
 				})
 			}
 		}
@@ -364,6 +368,10 @@ func optimizeSchematicLayout(in SchematicLayoutInput, baseline *SchematicLayoutR
 }
 
 func finishSchematicOptimizationPlacements(placements []powerLayoutPlacement, policies map[string]string, budget *int, baselineArg ...*SchematicLayoutResult) (*SchematicLayoutResult, error) {
+	return finishSchematicOptimizationPlacementsWithRouting(placements, policies, budget, nil, baselineArg...)
+}
+
+func finishSchematicOptimizationPlacementsWithRouting(placements []powerLayoutPlacement, policies map[string]string, budget *int, routing *schematicRoutingContext, baselineArg ...*SchematicLayoutResult) (*SchematicLayoutResult, error) {
 	p := powerLayoutPlan{Placements: placements}
 	if err := validateLibGeometry(&p); err != nil {
 		return nil, err
@@ -373,7 +381,7 @@ func finishSchematicOptimizationPlacements(placements []powerLayoutPlacement, po
 			return nil, err
 		}
 	}
-	finished, err := libFinishSchematicLayout(p, policies, budget)
+	finished, err := libFinishSchematicLayout(p, policies, budget, routing)
 	if err != nil {
 		return nil, err
 	}
@@ -435,7 +443,7 @@ func restoreSchematicOptimizationConnections(p *powerLayoutPlan, baseline *Schem
 			joined := false
 			for _, e := range edges {
 				qa, qb := pins[e.a], pins[e.b]
-				for _, route := range append(libRoutes(qa, qb), libDetourRoutes(qa, qb)...) {
+				for _, route := range append(libRoutes(qa, qb, p), libDetourRoutes(qa, qb, p)...) {
 					if *budget <= 0 {
 						return errLibLayoutBudget
 					}

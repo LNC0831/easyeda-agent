@@ -21,7 +21,7 @@ Also accepts layout-plan --zones output. Optional zone frame is preserved.
 Only translates supplied geometry; never solves or fabricates missing wires.
 Simplified symbols/text are not official EasyEDA graphics or electrical checks.
 Without sheet: display-only zone packing. With sheet: honor exact sheetPosition
-and check padding, zone gaps, keepouts and explicit sheet.flow:z; no reflow. Output is SVG.
+and check padding, zone gaps, keepouts and explicit sheet.flow:z/fixed; no reflow. Output is SVG.
 All zone-level variants are checked, including unselected ones and in diagnostic mode.
 --zone validates references and variants in the full input, then renders standalone detail
 without sheet placement constraints (not an entire-page validation).
@@ -193,8 +193,8 @@ func validateRenderSheetJSON(raw []byte) error {
 	}
 	if rawFlow, present := sheet["flow"]; present {
 		var flow string
-		if json.Unmarshal(rawFlow, &flow) != nil || (flow != "z" && flow != "compact") {
-			return fmt.Errorf("explicit sheet.flow must be z or compact")
+		if json.Unmarshal(rawFlow, &flow) != nil || (flow != "z" && flow != "compact" && flow != "fixed") {
+			return fmt.Errorf("explicit sheet.flow must be z, compact or fixed")
 		}
 	}
 	if len(top["spacing"]) != 0 && string(top["spacing"]) != "null" {

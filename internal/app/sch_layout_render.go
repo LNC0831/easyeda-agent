@@ -334,6 +334,7 @@ func renderLayoutMarker(b *bytes.Buffer, m powerLayoutFlag, X, Y func(float64) f
 func layoutJunctions(layout *SchematicLayoutResult) [][2]float64 {
 	var segments []powerLayoutWire
 	for _, w := range layout.Wires {
+		w.Points = plNormalizeWirePoints(w.Points)
 		for i := 1; i < len(w.Points); i++ {
 			segments = append(segments, powerLayoutWire{Net: w.Net, Points: [][2]float64{w.Points[i-1], w.Points[i]}})
 		}
@@ -355,17 +356,8 @@ func layoutJunctions(layout *SchematicLayoutResult) [][2]float64 {
 			candidates[p] = true
 		}
 	}
-	// Include interior-interior orthogonal intersections, too.
-	for i, a := range segments {
-		for _, b := range segments[:i] {
-			if a.Points[0][1] == a.Points[1][1] && b.Points[0][0] == b.Points[1][0] {
-				candidates[[2]float64{b.Points[0][0], a.Points[0][1]}] = true
-			}
-			if b.Points[0][1] == b.Points[1][1] && a.Points[0][0] == a.Points[1][0] {
-				candidates[[2]float64{a.Points[0][0], b.Points[0][1]}] = true
-			}
-		}
-	}
+	// Only real endpoints/vertices may establish a junction. A proper X
+	// stays two physical islands even when both wires happen to share a name.
 	var out [][2]float64
 	for p := range candidates {
 		nets := map[string]bool{}

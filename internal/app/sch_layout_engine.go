@@ -23,6 +23,19 @@ type SchematicLayoutPeripheral struct {
 	PinNumber   string                 `json:"pinNumber,omitempty"`
 	AttachTo    *SchematicLayoutAttach `json:"attachTo,omitempty"`
 }
+
+// SchematicMarkerAnchor makes marker ownership explicit. Pin anchors must start
+// at the named measured pin and leave on its official outward axis. Wire-tree
+// anchors name one real physical island contact; same net text is insufficient.
+type SchematicMarkerAnchor struct {
+	Type        string   `json:"type"`
+	ComponentID string   `json:"componentId,omitempty"`
+	PinNumber   string   `json:"pinNumber,omitempty"`
+	ZoneID      string   `json:"zoneId,omitempty"`
+	Net         string   `json:"net,omitempty"`
+	X           *float64 `json:"x,omitempty"`
+	Y           *float64 `json:"y,omitempty"`
+}
 type SchematicLayoutComponent struct {
 	ID               string             `json:"id"`
 	Measurement      SchematicPlacement `json:"measurement"`
@@ -33,6 +46,11 @@ type SchematicLayoutComponent struct {
 type SchematicLayoutOptimization struct {
 	MaxVariants int `json:"maxVariants,omitempty"`
 	MaxAttempts int `json:"maxAttempts,omitempty"`
+}
+
+type SchematicRoutingOptions struct {
+	MaxExpandedNodes int `json:"maxExpandedNodes,omitempty"`
+	MaxReroutes      int `json:"maxReroutes,omitempty"`
 }
 
 type SchematicLayoutVariant struct {
@@ -54,6 +72,8 @@ type SchematicLayoutInput struct {
 	Attachments     []SchematicLayoutPeripheral  `json:"attachments,omitempty"`
 	MaxCandidates   int                          `json:"maxCandidates,omitempty"`
 	Optimization    *SchematicLayoutOptimization `json:"optimization,omitempty"`
+	Routing         *SchematicRoutingOptions     `json:"routing,omitempty"`
+	MarkerAnchors   []SchematicMarkerAnchor      `json:"markerAnchors,omitempty"`
 }
 type SchematicLayoutResult struct {
 	SchemaVersion      int                               `json:"schemaVersion"`
@@ -68,6 +88,8 @@ type SchematicLayoutResult struct {
 	Variants           []SchematicLayoutVariant          `json:"variants,omitempty"`
 	AllowedRotations   map[string][]float64              `json:"allowedRotations,omitempty"`
 	OptimizationReport *SchematicOptimizationReport      `json:"optimizationReport,omitempty"`
+	FeasibilityReport  *SchematicFeasibilityReport       `json:"feasibilityReport,omitempty"`
+	Routing            *SchematicRoutingDiagnostics      `json:"routing,omitempty"`
 }
 
 // PlanSchematicLayout is side-effect-free. No project, library, sheet, module
@@ -174,20 +196,58 @@ func planSchematicLayoutWithBudget(input SchematicLayoutInput, budget *int) (*Sc
 		return nil, err
 	}
 	before := *budget
-	result, err := solveSchematicLayout(input, measured, members, hints, budget)
+	routing, err := newSchematicRoutingContext(input.Routing, input.Components)
 	if err != nil {
 		return nil, err
 	}
+	peripheralNetRoles := schematicMandatoryPeripheralSignalPolicies(&input)
+	// Ownership promotion is part of the effective electrical contract: a
+	// module_port shared by this zone's core and owned peripheral becomes direct.
+	// Snapshot only the promoted policies so every routing entry point agrees.
+	routing.policies = make(map[string]string, len(input.NetPolicies))
+	for net, policy := range input.NetPolicies {
+		routing.policies[net] = policy
+	}
+	result, feasibility, err := runSchematicLayoutFeasibility(input, measured, allowed, budget,
+		func(pose map[string]powerLayoutPlacement, quota *int) (*SchematicLayoutResult, error) {
+			return solveSchematicLayout(input, pose, members, hints, quota, routing)
+		})
+	if err != nil {
+		return nil, err
+	}
+	result.FeasibilityReport = feasibility
 	result.SchemaVersion = 1
 	result.ComponentIDs = refs
 	result.PinStates = map[string]map[string]string{}
 	for _, c := range input.Components {
 		result.PinStates[c.ID] = c.PinStates
 	}
+	if feasibility != nil {
+		result.AllowedRotations = allowed
+		if err := validateSchematicOptimizationEvidence(input, result, allowed); err != nil {
+			return nil, fmt.Errorf("allowed-pose source evidence: %w", err)
+		}
+	}
 	result.CandidatesUsed = before - *budget
+	result.Routing = routing.snapshot()
 	if optimization != nil {
-		result = optimizeSchematicLayout(input, result, measured, members, hints, *optimization, allowed, budget)
+		result = optimizeSchematicLayout(input, result, measured, members, hints, *optimization, allowed, budget, routing)
 		result.CandidatesUsed = before - *budget
+		result.Routing = routing.snapshot()
+	}
+	if err := validateSchematicLayoutPeripheralDirect(result, input.CoreComponentID, peripheralNetRoles); err != nil {
+		return nil, err
+	}
+	if err := annotateSchematicMarkerAnchors(result, input.MarkerAnchors, ""); err != nil {
+		return nil, err
+	}
+	for _, variant := range result.Variants {
+		if err := validateSchematicLayoutPeripheralDirect(variant.Layout, input.CoreComponentID, peripheralNetRoles); err != nil {
+			return nil, fmt.Errorf("variant %s: %w", variant.ID, err)
+		}
+		if err := annotateSchematicMarkerAnchors(variant.Layout, input.MarkerAnchors, ""); err != nil {
+			return nil, fmt.Errorf("variant %s marker anchors: %w", variant.ID, err)
+		}
 	}
 	return result, nil
 }

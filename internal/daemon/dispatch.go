@@ -241,6 +241,16 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 	}
 	req.CreatedAt = time.Now().UTC()
 	req.WindowID = target.id()
+	if schematicGeometrySerializes(&req) {
+		release, acquired := s.acquireExclusive("schematic-geometry-window", req.WindowID)
+		if !acquired {
+			errResp := errorResponse(req.ID, "ACTION_BUSY", "a write/document transition is being verified on this window", "wait for its readback; do not interleave another write or document switch")
+			s.audit.Append(fromResponse(time.Now().UTC(), &req, &errResp))
+			writeJSON(w, http.StatusConflict, errResp)
+			return
+		}
+		defer release()
+	}
 
 	// Workflow stage gate (issue #97): routing actions refuse until the
 	// project's persisted stage state authorizes them — enforced HERE, at the
@@ -295,7 +305,11 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 		defer release()
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout(&req))
+	executionBudget := requestTimeout(&req)
+	if schematicGeometryGuarded(req.Action) {
+		executionBudget += 2 * protocol.SchematicGeometryReadTimeout(time.Duration(req.TimeoutMs)*time.Millisecond)
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), executionBudget)
 	defer cancel()
 
 	started := time.Now().UTC()
@@ -324,7 +338,10 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 	// an IDLE gap, never in the middle of a batch (autosave.go). Deferred rather
 	// than released inline so no early return can leak the counter.
 	defer s.beginClientAction(req.WindowID)()
-	resp, err, _ := forwardWithAdaptiveRetry(ctx, req, target.dispatch, hooks)
+	guardedDispatch := func(ctx context.Context, req protocol.Request) (*protocol.Response, error) {
+		return s.forwardSchematicGeometry(ctx, req, target.dispatch)
+	}
+	resp, err, _ := forwardWithAdaptiveRetry(ctx, req, guardedDispatch, hooks)
 	if err != nil {
 		// One timed-out FIFO action is not yet proof of a blocked queue — a light
 		// queued read that stays unanswered IS. Fire that probe now (never awaited)

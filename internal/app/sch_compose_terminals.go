@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"github.com/zhoushoujianwork/easyeda-agent/internal/schguard"
 	"strings"
 )
 
@@ -103,6 +104,13 @@ func planSchCompositionTerminals(p *powerLayoutPlan, terminals []schCompositionT
 // inside the measurement halo, accept only its nearest edge (and outward half
 // of the body). This classifies direction only: body collision stays strict.
 func schTerminalPointsOutward(q powerLayoutPin, b layoutBBox, direction string) bool {
+	if q.Rotation != nil {
+		x, y, ok := schguard.CardinalOutward(*q.Rotation)
+		if !ok {
+			return false
+		}
+		return (direction == "right" && x > 0) || (direction == "left" && x < 0) || (direction == "up" && y > 0) || (direction == "down" && y < 0)
+	}
 	distances := map[string]float64{"left": q.X - b.MinX, "right": b.MaxX - q.X, "up": b.MaxY - q.Y, "down": q.Y - b.MinY}
 	distance, ok := distances[direction]
 	if !ok {
@@ -194,7 +202,7 @@ func schTerminalCandidate(p *powerLayoutPlan, f powerLayoutFlag, segments []powe
 		}
 	}
 	for _, s := range segments {
-		if s.Net != f.Net && plSegmentsMeet(a, b, s.Points[0], s.Points[1]) {
+		if s.Net != f.Net && plSegmentsContact(a, b, s.Points[0], s.Points[1]) {
 			return fmt.Errorf("lead crosses foreign wire %s", s.Net)
 		}
 	}
