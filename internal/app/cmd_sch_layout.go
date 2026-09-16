@@ -200,6 +200,14 @@ type layoutReport struct {
 // Deterministic ordering keeps output and tests stable. Kept free of I/O for
 // unit-testing.
 func analyzeLayout(comps []layoutComp, minGap, pinEps float64) layoutReport {
+	return analyzeLayoutWithOwnership(comps, minGap, pinEps, nil)
+}
+
+// analyzeLayoutWithOwnership is analyzeLayout plus the explicit page ownership
+// relation. Ownership affects only tight-spacing: cores and their declared
+// peripherals are expected to sit close. Positive-area overlap remains a hard
+// error even within one function, and unknown/cross-owner pairs remain tight.
+func analyzeLayoutWithOwnership(comps []layoutComp, minGap, pinEps float64, sameOwner schSameGroupFn) layoutReport {
 	rep := layoutReport{MinGap: minGap, PinEps: pinEps, Total: len(comps)}
 
 	withBBox := make([]layoutComp, 0, len(comps))
@@ -227,6 +235,9 @@ func analyzeLayout(comps []layoutComp, minGap, pinEps float64) layoutReport {
 				continue
 			}
 			if gap := rectGap(*a.BBox, *b.BBox); gap < minGap {
+				if sameOwner != nil && sameOwner(a.Designator, b.Designator) {
+					continue
+				}
 				rep.TightPairs = append(rep.TightPairs, layoutFinding{Type: "spacing", A: la, B: lb, Gap: round2(gap)})
 			}
 		}
@@ -622,7 +633,24 @@ func collectLayoutLintWith(cfg *appConfig, window string, minGap, pinEps float64
 	}
 	realParts, _ := filterLayoutComps(comps, false)
 	parts, skipped := filterLayoutComps(comps, includeNonParts)
-	rep := analyzeLayout(parts, mmToSchematicUnits(minGap), mmToSchematicUnits(pinEps))
+
+	// Load the same explicit ownership table used by the cluster gate. This is
+	// deliberately page-scoped and declaration-only: no net/proximity fallback.
+	var zones map[string]*schZoneClaim
+	var zerr error
+	var sameOwner schSameGroupFn
+	if !allPages {
+		var project string
+		zones, project, zerr = loadSchZoneClaimsForPage(readCfg, readWindow, docUUID)
+		if zerr == nil {
+			var st *pcbStageState
+			st, zerr = loadPcbStageState(project)
+			if zerr == nil {
+				sameOwner = schSameLayoutOwnerFromState(st, docUUID)
+			}
+		}
+	}
+	rep := analyzeLayoutWithOwnership(parts, mmToSchematicUnits(minGap), mmToSchematicUnits(pinEps), sameOwner)
 	if includeNonParts {
 		// --include-non-parts expands bbox/spacing inspection only. Sheet/text/
 		// markers do not have device pins and must not make the strict pin proof
@@ -642,11 +670,6 @@ func collectLayoutLintWith(cfg *appConfig, window string, minGap, pinEps float64
 	// Zone checks are explicit in schema v2. No configured claims is a valid
 	// "not-configured" state; an unreadable state or configured claims without a
 	// live sheet is "unavailable" and fails --strict instead of silently passing.
-	var zones map[string]*schZoneClaim
-	var zerr error
-	if !allPages {
-		zones, _, zerr = loadSchZoneClaimsForPage(readCfg, readWindow, docUUID)
-	}
 	sheet := sheetBBoxOf(comps)
 	switch {
 	case allPages:

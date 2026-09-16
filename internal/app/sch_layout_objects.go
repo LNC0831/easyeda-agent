@@ -207,6 +207,55 @@ func layoutObjectTableFromState(st *pcbStageState, docUUID string) []*layoutObje
 	return buildLayoutObjectTable(st.SchZonesForPage(docUUID), st.GroupsForPage(docUUID))
 }
 
+// schSameLayoutOwnerFromState folds the page's explicit ownership declarations
+// into the one predicate shared by layout-lint and clusters. Both persistent
+// sources count: module/zone claims and functional groups. A pair is exempt
+// from tight-spacing only when one concrete declared object contains both
+// designators; common nets, proximity, and naming patterns never infer an
+// owner. Missing declarations therefore conservatively return false.
+func schSameLayoutOwnerFromState(st *pcbStageState, docUUID string) schSameGroupFn {
+	table := layoutObjectTableFromState(st, docUUID)
+	if len(table) == 0 {
+		return nil
+	}
+	owners := map[string]map[int]bool{}
+	for oi, obj := range table {
+		if obj == nil {
+			continue
+		}
+		claim := obj.zoneClaim()
+		if claim == nil {
+			continue
+		}
+		for _, member := range claim.Parts {
+			key := strings.ToUpper(strings.TrimSpace(member))
+			if key == "" {
+				continue
+			}
+			if owners[key] == nil {
+				owners[key] = map[int]bool{}
+			}
+			owners[key][oi] = true
+		}
+	}
+	if len(owners) == 0 {
+		return nil
+	}
+	return func(a, b string) bool {
+		aOwners := owners[strings.ToUpper(strings.TrimSpace(a))]
+		bOwners := owners[strings.ToUpper(strings.TrimSpace(b))]
+		if len(aOwners) == 0 || len(bOwners) == 0 {
+			return false
+		}
+		for owner := range aOwners {
+			if bOwners[owner] {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 // loadLayoutObjectTable 解析工程、加载 workflow 状态并双读一页的注册表。
 func loadLayoutObjectTable(cfg *appConfig, window, docUUID string) ([]*layoutObject, string, error) {
 	project, err := resolveStageProject(cfg, window)

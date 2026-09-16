@@ -291,6 +291,31 @@ func TestAnalyzeLayout_TightSpacing(t *testing.T) {
 	}
 }
 
+func TestAnalyzeLayoutWithOwnership_ExemptsOnlySameOwnerTight(t *testing.T) {
+	comps := []layoutComp{
+		{Designator: "U1", BBox: bb(0, 0, 10, 10)},
+		{Designator: "C1", BBox: bb(11, 0, 21, 10)}, // same owner, gap 1
+		{Designator: "R1", BBox: bb(22, 0, 32, 10)}, // cross owner from C1, gap 1
+	}
+	sameOwner := func(a, b string) bool {
+		return (a == "U1" && b == "C1") || (a == "C1" && b == "U1")
+	}
+	rep := analyzeLayoutWithOwnership(comps, 2.54, -1, sameOwner)
+	if len(rep.TightPairs) != 1 || rep.TightPairs[0].A != "C1" || rep.TightPairs[0].B != "R1" {
+		t.Fatalf("same-owner tight should be exempt while cross-owner tight remains: %+v", rep.TightPairs)
+	}
+
+	// Ownership is never an overlap exemption.
+	overlap := []layoutComp{
+		{Designator: "U1", BBox: bb(0, 0, 10, 10)},
+		{Designator: "C1", BBox: bb(5, 5, 15, 15)},
+	}
+	rep = analyzeLayoutWithOwnership(overlap, 2.54, -1, sameOwner)
+	if rep.OK || len(rep.Overlaps) != 1 || len(rep.TightPairs) != 0 {
+		t.Fatalf("same-owner positive-area overlap must remain blocking: %+v", rep)
+	}
+}
+
 func TestAnalyzeLayout_Clear(t *testing.T) {
 	comps := []layoutComp{
 		{Designator: "U1", BBox: bb(0, 0, 10, 10)},

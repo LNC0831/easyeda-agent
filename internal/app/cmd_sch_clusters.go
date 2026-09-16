@@ -55,6 +55,11 @@ type schClusterTyped struct {
 	BBox layoutBBox
 }
 
+// Model a schematic centreline with a 1-raw topological stroke for positive-area
+// member collision checks; the cluster's aggregate Box still uses the exact
+// polyline envelope for page occupancy.
+const schClusterWireHalfWidth = 0.5
+
 // schClusterFinding 是一条判定结果。
 type schClusterFinding struct {
 	Type  string  `json:"type"` // overlap | out-of-sheet | tight
@@ -138,13 +143,19 @@ func buildSchClusters(comps []layoutComp, wires []schGroupWire) ([]schCluster, i
 		box[d] = b
 		members[d] = []layoutBBox{b}
 	}
-	grow := func(d string, b layoutBBox) {
+	growBox := func(d string, b layoutBBox) {
 		cur := box[d]
 		box[d] = layoutBBox{
 			MinX: math.Min(cur.MinX, b.MinX), MinY: math.Min(cur.MinY, b.MinY),
 			MaxX: math.Max(cur.MaxX, b.MaxX), MaxY: math.Max(cur.MaxY, b.MaxY),
 		}
+	}
+	addMember := func(d string, b layoutBBox) {
 		members[d] = append(members[d], b)
+	}
+	grow := func(d string, b layoutBBox) {
+		growBox(d, b)
+		addMember(d, b)
 	}
 	detail := map[string][]string{}
 	typed := map[string][]schClusterTyped{}
@@ -184,29 +195,45 @@ func buildSchClusters(comps []layoutComp, wires []schGroupWire) ([]schCluster, i
 	}
 	at := map[[2]int64][]int{}
 	wireBox := make([]layoutBBox, len(wires))
+	wireBoxValid := make([]bool, len(wires))
+	wireMembers := make([][]layoutBBox, len(wires))
 	for wi, w := range wires {
 		if len(w.Points) < 4 {
 			continue
 		}
 		find(wi)
-		b := layoutBBox{MinX: w.Points[0], MinY: w.Points[1], MaxX: w.Points[0], MaxY: w.Points[1]}
+		// Collision members must preserve the observed flat-segment encoding.
+		// One bbox for the whole L/polyline contains empty corners and caused the
+		// dev.12 U2↔C7 false overlap. Box below remains the union envelope for
+		// cluster occupancy/page bounds; Members receives each real segment.
+		for _, seg := range schDesignatorWireSegments(w) {
+			b, ok := schClusterWireSegmentBBox(seg)
+			if !ok {
+				continue
+			}
+			wireMembers[wi] = append(wireMembers[wi], b)
+			rawBox := layoutBBox{
+				MinX: math.Min(seg[0], seg[2]), MinY: math.Min(seg[1], seg[3]),
+				MaxX: math.Max(seg[0], seg[2]), MaxY: math.Max(seg[1], seg[3]),
+			}
+			if !wireBoxValid[wi] {
+				wireBox[wi], wireBoxValid[wi] = rawBox, true
+			} else {
+				wireBox[wi] = schUnionBBox(wireBox[wi], rawBox)
+			}
+		}
 		for i := 0; i+1 < len(w.Points); i += 2 {
-			b.MinX = math.Min(b.MinX, w.Points[i])
-			b.MaxX = math.Max(b.MaxX, w.Points[i])
-			b.MinY = math.Min(b.MinY, w.Points[i+1])
-			b.MaxY = math.Max(b.MaxY, w.Points[i+1])
 			k := quant(w.Points[i], w.Points[i+1])
 			for _, other := range at[k] {
 				union(wi, other)
 			}
 			at[k] = append(at[k], wi)
 		}
-		wireBox[wi] = b
 	}
 	// ② 每个导线连通块触到哪些器件。
 	touch := map[int]map[string]bool{}
 	for wi := range wires {
-		if len(wires[wi].Points) < 4 {
+		if len(wires[wi].Points) < 4 || !wireBoxValid[wi] {
 			continue
 		}
 		r := find(wi)
@@ -236,8 +263,11 @@ func buildSchClusters(comps []layoutComp, wires []schGroupWire) ([]schCluster, i
 			continue // 跨组的走线通道,不属于任何一组
 		}
 		for o := range touch[r] {
-			grow(o, wireBox[wi])
-			note(o, "wire", "", wireBox[wi])
+			growBox(o, wireBox[wi])
+			for _, segmentBox := range wireMembers[wi] {
+				addMember(o, segmentBox)
+				note(o, "wire", "", segmentBox)
+			}
 			wireCount[o]++
 		}
 	}
@@ -302,6 +332,23 @@ func buildSchClusters(comps []layoutComp, wires []schGroupWire) ([]schCluster, i
 	return out, unowned
 }
 
+// schClusterWireSegmentBBox turns one real orthogonal wire segment into a
+// positive-area member box. The epsilon is only a topological stroke: it lets a
+// centreline that enters another body count as an intersection without turning
+// the empty corner of a multi-segment polyline into occupied area.
+func schClusterWireSegmentBBox(seg [4]float64) (layoutBBox, bool) {
+	x0, y0, x1, y1 := seg[0], seg[1], seg[2], seg[3]
+	if math.Hypot(x1-x0, y1-y0) <= acOverlapEps {
+		return layoutBBox{}, false
+	}
+	return layoutBBox{
+		MinX: math.Min(x0, x1) - schClusterWireHalfWidth,
+		MinY: math.Min(y0, y1) - schClusterWireHalfWidth,
+		MaxX: math.Max(x0, x1) + schClusterWireHalfWidth,
+		MaxY: math.Max(y0, y1) + schClusterWireHalfWidth,
+	}, true
+}
+
 // membersOf 退化保护:老调用方(或手搓的 fixture)没填 Members 时用包络顶上。
 func membersOf(c schCluster) []layoutBBox {
 	if len(c.Members) > 0 {
@@ -348,7 +395,8 @@ func judgeSchClustersWith(cs []schCluster, usable *layoutBBox, minGap float64, s
 			ox, oy, hit := 0.0, 0.0, false
 			gap := math.Inf(1)
 			ea, eb := cs[i].Box, cs[j].Box
-			if boxGapAlongAxes(ea, eb) < minGap || boxesIntersect(ea, eb) {
+			envelopeGap := boxGapAlongAxes(ea, eb)
+			if envelopeGap < minGap || envelopeGap <= schClusterWireHalfWidth || boxesIntersect(ea, eb) {
 				for _, a := range membersOf(cs[i]) {
 					for _, b := range membersOf(cs[j]) {
 						x := math.Min(a.MaxX, b.MaxX) - math.Max(a.MinX, b.MinX)
@@ -441,7 +489,7 @@ func runSchClusters(cfg *appConfig, window string, minGap float64, asJSON, stric
 	// 带上功能子群信息:块内「去耦贴电源脚」这类紧贴是设计要求,不该报 tight。
 	var same schSameGroupFn
 	if _, _, docUUID, _, st, _, gerr := loadSchGroupsContext(cfg, window); gerr == nil {
-		same = schSameGroupFromState(st, docUUID)
+		same = schSameLayoutOwnerFromState(st, docUUID)
 	}
 	findings := judgeSchClustersWith(clusters, usable, minGap, same)
 	report := schClusterReport{Clusters: clusters, Findings: findings, Sheet: usable, Unowned: unowned,
@@ -666,30 +714,4 @@ func schUnionBBox(a, b layoutBBox) layoutBBox {
 // judgeSchClusters 是不带分组信息的旧签名(纯几何,同组不豁免)。
 func judgeSchClusters(cs []schCluster, usable *layoutBBox, minGap float64) []schClusterFinding {
 	return judgeSchClustersWith(cs, usable, minGap, nil)
-}
-
-// schSameGroupFromState 从持久虚拟组表折出「同组」谓词。读不到组表时返回 nil,
-// 判据退回纯几何 —— **不知道分组时宁可多报**,漏报一个跨块紧贴比多报一条噪音贵。
-func schSameGroupFromState(st *pcbStageState, docUUID string) schSameGroupFn {
-	if st == nil {
-		return nil
-	}
-	groups := st.GroupsForPage(docUUID)
-	if len(groups) == 0 {
-		return nil
-	}
-	of := map[string]string{}
-	for _, g := range groups {
-		if g == nil {
-			continue
-		}
-		for _, m := range g.Members {
-			of[strings.ToUpper(m)] = g.ID
-		}
-	}
-	return func(a, b string) bool {
-		ga, oka := of[strings.ToUpper(a)]
-		gb, okb := of[strings.ToUpper(b)]
-		return oka && okb && ga == gb
-	}
 }

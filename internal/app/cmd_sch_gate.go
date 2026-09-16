@@ -345,7 +345,7 @@ func gateClustersStage(cfg *appConfig, window string, strict bool, geom *schGeom
 	}
 	var same schSameGroupFn
 	if _, _, docUUID, _, gst, _, gerr := loadSchGroupsContext(cfg, window); gerr == nil {
-		same = schSameGroupFromState(gst, docUUID)
+		same = schSameLayoutOwnerFromState(gst, docUUID)
 	}
 	findings := judgeSchClustersWith(clusters, usable, minGap, same)
 	st.Detail = schClusterReport{Clusters: clusters, Findings: findings, Sheet: usable}

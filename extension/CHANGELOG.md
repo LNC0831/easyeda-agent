@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.5.0-dev.13] — 2026-09-17 (local development only; fresh-session live validation required)
+
+- Share one page-scoped explicit ownership predicate between schematic layout-lint and cluster validation. Tight spacing inside the same declared module/zone or persistent functional group is allowed, while positive-area overlap, cross-owner tight spacing, missing ownership and conflicting geometry remain blocking.
+- Preserve each owned wire's complete polyline envelope for cluster occupancy and sheet bounds, but judge member collisions against the official independent flat segments. Empty corners of an L-shaped wire no longer manufacture an overlap; a real segment or marker crossing another component still fails.
+- dev.12 applied P1 through step 185/188 with complete electrical, bridge and official DRC checks, then stopped at the strict layout gate on four same-function tight pairs plus one L-envelope false overlap. Final explicit save and final instance reconciliation did not run; dev.13 requires a fresh-session gate and must not resume the old queue.
+
 ## [1.5.0-dev.12] — 2026-09-17 (local development only; fresh-session live validation required)
 
 - Split compose's project-wide duplicate-designator preflight from its target-page instance-preservation guard. The cross-page step now requests only the complete tagged component inventory and checks refs, primitive IDs and planned absences; it no longer repeats slow device-identity, bbox or pin hydration.

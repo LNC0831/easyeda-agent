@@ -58,6 +58,82 @@ func TestBuildSchClusters_InterPartWireBelongsToNobody(t *testing.T) {
 	}
 }
 
+func TestBuildSchClusters_LWireEmptyCornerIsNotOccupied(t *testing.T) {
+	comps := []layoutComp{
+		clPart("U1", -20, -5, -10, 5, [2]float64{0, 0}),
+		// Inside the whole L-wire envelope, but outside every real segment.
+		clPart("C7", 20, 5, 25, 10),
+	}
+	wires := []schGroupWire{{
+		ID:     "w-l",
+		Points: []float64{0, 0, 10, 0, 10, 0, 10, 20, 10, 20, 30, 20},
+		ObservedSegments: [][4]float64{
+			{0, 0, 10, 0}, {10, 0, 10, 20}, {10, 20, 30, 20},
+		},
+	}}
+	cs, _ := buildSchClusters(comps, wires)
+	if got := judgeSchClusters(cs, nil, 0); len(got) != 0 {
+		t.Fatalf("empty corner of an L-shaped wire envelope is not occupied: %+v", got)
+	}
+	var u1 *schCluster
+	for i := range cs {
+		if cs[i].Designator == "U1" {
+			u1 = &cs[i]
+		}
+	}
+	if u1 == nil || u1.Box.MaxX < 30 || u1.Box.MaxY < 20 || len(u1.Members) != 4 {
+		t.Fatalf("cluster envelope must still cover the full wire while members stay per-segment: %+v", u1)
+	}
+	wiresTyped := 0
+	wholeWireEnvelope := layoutBBox{MinX: 0, MinY: 0, MaxX: 30, MaxY: 20}
+	for _, item := range u1.Typed {
+		if item.Kind != "wire" {
+			continue
+		}
+		wiresTyped++
+		if item.BBox == wholeWireEnvelope {
+			t.Fatalf("typed collision evidence must not collapse back to the whole polyline envelope: %+v", item)
+		}
+	}
+	if wiresTyped != 3 {
+		t.Fatalf("typed collision evidence must retain all three official flat segments, got %d: %+v", wiresTyped, u1.Typed)
+	}
+}
+
+func TestBuildSchClusters_RealSegmentAndMarkerStillCollide(t *testing.T) {
+	t.Run("real segment", func(t *testing.T) {
+		comps := []layoutComp{
+			clPart("U1", -20, -5, -10, 5, [2]float64{0, 0}),
+			clPart("C7", 9, 5, 11, 10), // crossed by the real vertical segment x=10
+		}
+		wires := []schGroupWire{{
+			ID:               "w-l",
+			Points:           []float64{0, 0, 10, 0, 10, 0, 10, 20},
+			ObservedSegments: [][4]float64{{0, 0, 10, 0}, {10, 0, 10, 20}},
+		}}
+		cs, _ := buildSchClusters(comps, wires)
+		got := judgeSchClusters(cs, nil, 0)
+		if len(got) != 1 || got[0].Type != "overlap" || got[0].Level != "ERROR" {
+			t.Fatalf("a real owned segment crossing another body must remain an error: %+v", got)
+		}
+	})
+
+	t.Run("marker body", func(t *testing.T) {
+		marker := layoutComp{ID: "m1", ComponentType: "netport", X: 30, Y: 0,
+			BBox: &layoutBBox{MinX: 20, MinY: 10, MaxX: 30, MaxY: 20}}
+		comps := []layoutComp{
+			clPart("U1", -20, -5, -10, 5, [2]float64{0, 0}), marker,
+			clPart("C7", 22, 12, 28, 18),
+		}
+		wires := []schGroupWire{{ID: "stub", Points: []float64{0, 0, 30, 0}}}
+		cs, _ := buildSchClusters(comps, wires)
+		got := judgeSchClusters(cs, nil, 0)
+		if len(got) != 1 || got[0].Type != "overlap" || got[0].Level != "ERROR" {
+			t.Fatalf("an owned marker overlapping another body must remain an error: %+v", got)
+		}
+	})
+}
+
 // 判定:体积相交 = ERROR;探出可用区 = ERROR;够不着 min-gap = WARN。
 func TestJudgeSchClusters(t *testing.T) {
 	cs := []schCluster{

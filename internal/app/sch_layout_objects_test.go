@@ -232,3 +232,23 @@ func TestLayoutObjectTableFromState_DualReadBothStores(t *testing.T) {
 		t.Fatalf("legacy 认领该可读:%v", err)
 	}
 }
+
+func TestSameLayoutOwnerFromState_UsesOnlyExplicitClaimsAndGroups(t *testing.T) {
+	st := &pcbStageState{}
+	st.SetSchZonesForPage("doc-1", map[string]*schZoneClaim{
+		"POWER": {Parts: []string{"U1", "C1"}},
+	})
+	st.SetGroupsForPage("doc-1", []*workflow.Group{
+		{ID: "g1", Name: "USB", Members: []string{"U2", "C2"}},
+	})
+	same := schSameLayoutOwnerFromState(st, "doc-1")
+	if same == nil || !same("u1", "C1") || !same("U2", "c2") {
+		t.Fatal("both explicit zone claims and persistent groups must establish ownership")
+	}
+	if same("U1", "U2") || same("C1", "C2") || same("U1", "UNKNOWN") {
+		t.Fatal("cross-owner or undeclared pairs must not gain a proximity/net-style exemption")
+	}
+	if got := schSameLayoutOwnerFromState(st, "other-page"); got != nil {
+		t.Fatal("ownership must remain page-scoped")
+	}
+}

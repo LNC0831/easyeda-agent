@@ -111,6 +111,10 @@ easyeda sch sheet-geometry --project <project> --doc <page-uuid> --json
 - gate 不能证明设计意图。另将实际 connectivity 的组件 ID、pin→net 与 NC 对照目标图。
 - `layout-lint --strict` 要求完整的单页本体、引脚和图纸几何，不能和 `--all-pages`
   合用。它不覆盖全部外置位号；需补位号与 marker 数据检查，非位号属性不参与布局判定。
+  器件 tight-spacing 复用本页显式 zone/功能组 ownership：同一功能区内的紧贴不阻断，
+  但同组真实 overlap 和跨组 tight 仍阻断；缺 ownership 时不得按同网或距离猜测豁免。
+  `clusters` 对 owned wire 逐官方 flat segment 判成员相交，整条折线包络仅用于总体占地和
+  页面边界，不能把 L 形空角算作碰撞。
 - `sch check --json` 的逐条问题在 `result.findings`。SDK DRC 可能只返回布尔/聚合值，
   不能单凭它宣称官方 UI 所有警告已清除；跳过的 gate 阶段仍需补验。
 - 用 `sch export-image` 导整页或指定 `--ids`；这是文档渲染，不依赖前台视口刷新。

@@ -1,11 +1,10 @@
-# 原理图通用算法验证 — v1.5.0-dev.12
+# 原理图通用算法验证 — v1.5.0-dev.13
 
 2026-09-17。目标是通用算法，不是修好某一张原理图。离线原始 P1/P2 已通过。
-dev.11 安装后的新会话完成了 P2 只读复验，严格门禁通过。P1 使用新鲜现场数据重新完成
-求解、组合和 dry-run，但两次 Apply 都在第 1 步、任何 mutation 之前停止；第二次暴露出
-全工程位号唯一性守卫重复请求慢速器件身份、bbox 和引脚数据的问题。dev.12 已在源码中把
-该守卫缩减为最小跨页清单，同时保留下一步完整目标页守卫；尚未安装或现场验证。
-本记录不是 v1.5.0 发布验收。
+dev.11 安装后的新会话完成 P2 只读复验；dev.12 完成 P1 新鲜求解与受保护 Apply，
+但在最终布局门因两条检查器假警停止，未进入最终显式保存。dev.13 将同页显式 ownership
+统一到 `layout-lint` 与 `clusters`，并按官方 flat segments 逐段检查 owned wire；离线回归已通过，
+仍需安装 dev.13 后由新会话现场重放 P1。本记录不是 v1.5.0 发布验收。
 规范唯一来源为 [Skill 数据驱动架构](../skills/easyeda-agent/references/schematic-data.md)。
 
 ## 已实现的通用契约
@@ -203,9 +202,48 @@ dev.12 目前只完成源码、离线测试、Skill 契约、版本同步和本�
 更不能恢复或续跑任一 dev.11 队列。下一轮必须使用 dev.12 本地包，从新鲜快照重新生成
 队列后再验证。
 
+## dev.12 P1 现场 Apply 与 dev.13 检查器修复（2026-09-17）
+
+dev.12 安装后的全新会话通过本地版本门禁；CLI、Skill、daemon 与 Web Connector 均为
+`v1.5.0-dev.12`。本轮只使用现有 Web P1 标签，从新鲜页面数据重建原始三 zone 输入：
+17 个器件、14 条 attachment，17/17 器件身份均由 dev.12 快照直接解析。现场证据保存在
+本地忽略目录 `.easyeda/repair-20260914/live-dev12/`。
+
+- `layout-plan --zones` 约 111 秒完成，随后生成单页 Z-flow、compose 计划和 188 步
+  preserve-instances 队列；dry-run 通过。
+- Apply 的第 1 步 `designatorsOnly` 在约 0.4 秒通过，第 2 步完整 P1 守卫在约 5.2 秒通过；
+  第 3–185 步成功。第 186 步 `layout-lint --strict` 失败，第 187 步最终显式 save 和
+  第 188 步最终实例对账未执行。旧队列未 resume，失败后已新鲜回读页面。
+- 已落地并回读 17 个原实例、119 条 wire、32 个 marker、3 个 group 与 3 个 frame/title；
+  pin/net/NC 末态守卫、electrical check、bridge check（32 trees、0 bridge、0 orphan）均通过，
+  官方 DRC fatal/error/warn/info 均为 0。
+- 严格布局门报 C5↔R6、C6↔L1、D1↔U3、D2↔D3 四组 tight-spacing；它们分别属于
+  `BUCK_3V3` 或 `POWER_ENTRY` 的同一显式功能组。clusters 规则已对同功能组 tight 豁免，
+  layout-lint 却没有复用 ownership，形成同一画布两套判据。
+- clusters 另报 U2↔C7 overlap。U2 的 L 形线真实三段均未进入 C7 本体，但旧实现把整条
+  折线包络当作碰撞成员，误把包络的空白右上角判成约 `8.5 × 0.5 raw` 相交。
+
+dev.13 将这两个现场 finding 收敛为通用数据规则：layout-lint 与 clusters 共用本页显式
+module/zone claim 和 persistent group ownership，仅豁免同 ownership 的 tight-spacing；
+真实 overlap、跨 ownership tight 和归属缺失仍保持阻断，不按同网、距离或位号猜归属。
+owned wire 的 cluster 总 `Box` 继续使用完整折线包络做占地与页面边界，但碰撞成员改按官方
+flat-segments 的每条真实线段判断；真实线段或 marker 与其他器件相交仍报错。最小回归覆盖
+同组 tight、跨组 tight、同组 overlap、L 形空角、真实线段相交、marker 相交与双源页面归属。
+
+dev.13 离线门禁已通过：`go test ./... -count=1`、Connector 331/331、`npm run typecheck`、
+`make lint-test blocks-audit modules-audit skill-check release-script-test`、Go 格式检查和 `git diff --check`
+均无失败。版本元数据已统一为 `v1.5.0-dev.13`；本地开发包
+`dist/local-v1.5.0-dev.13` 已生成五平台 CLI、Connector、Skill 和安装脚本，全部资产
+checksum、同版 Connector/Skill 及本机 CLI 版本检查通过。这仍是离线与打包证据，
+不将它写成现场通过。
+
+第 187 步未执行，因此本轮不能登记为“最终显式保存完成”；daemon 防抖 autosave 即使可能
+触发，也不能替代该证据。dev.13 在本节记载时尚未安装，也尚未重跑 P1，不能把检查器修复
+写成现场门禁已经通过。
+
 ## 明确边界
 
 有界窗口、姿态菜单与预算不是完备搜索；仍可能重复探索局部预算窗口。失败不证明全局无解，
 不能靠扩大预算、放松硬约束或手改最终坐标宣称解决。外围语义归属仍需显式输入。
 宿主接触语义现场证据限于已测 EasyEDA Pro 3.2.186；未知宿主行为须完整回读，不推定兼容。
-离线实例保全/回读守卫测试不等于 dev.12 运行时现场验收；PCB 与正式发布均不在本轮执行范围。
+离线实例保全/回读守卫测试不等于 dev.13 运行时现场验收；PCB 与正式发布均不在本轮执行范围。
