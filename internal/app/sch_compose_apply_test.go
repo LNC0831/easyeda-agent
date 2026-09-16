@@ -256,8 +256,18 @@ func TestComposeApplyOtherPagesAllowDistinctRefsButRejectTargetCollisions(t *tes
 				t.Fatal(err)
 			}
 			guard := &pb.Steps[0]
-			if guard.Action != "schematic.components.list" || guard.Payload["allPages"] != true || guard.Payload["tagPages"] != true || guard.ExpectSchematic == nil || guard.ExpectSchematic.ExactParts {
+			if guard.Action != "schematic.components.list" || guard.Payload["allPages"] != true || guard.Payload["tagPages"] != true || guard.ExpectSchematic == nil || guard.ExpectSchematic.ExactParts || !guard.ExpectSchematic.DesignatorsOnly {
 				t.Fatal("first guard must check project-wide uniqueness while allowing other pages' distinct refs")
+			}
+			for _, slow := range []string{"includePins", "includeBBox", "includeDeviceIdentity", "includeWires", "includeConnectivitySummary"} {
+				if _, exists := guard.Payload[slow]; exists {
+					t.Fatalf("project-wide designator guard requested unrelated slow field %s", slow)
+				}
+			}
+			for ref, part := range guard.ExpectSchematic.Parts {
+				if part.Device != nil || part.BBox != nil || part.Pins != nil || part.Instance != nil || part.X != nil || part.Y != nil || part.Rotation != nil || part.Mirror != nil {
+					t.Fatalf("project-wide designator guard retained non-designator state for %s: %+v", ref, part)
+				}
 			}
 			if err := guard.ExpectSchematic.check(env["result"], nil); err != nil {
 				t.Fatalf("original complete target inventory did not pass its guard: %v", err)
@@ -297,7 +307,7 @@ func TestComposeApplyEmptyTargetAllowsOtherPageRefsButProtectsNewRefs(t *testing
 		t.Fatalf("a known empty target page must produce a guarded placement queue: %v", err)
 	}
 	guard := pb.Steps[0].ExpectSchematic
-	if guard == nil || guard.ExactParts || len(guard.Parts) != 0 || len(guard.AbsentParts) != len(p.Layout.Placements) {
+	if guard == nil || guard.ExactParts || !guard.DesignatorsOnly || len(guard.Parts) != 0 || len(guard.AbsentParts) != len(p.Layout.Placements) {
 		t.Fatal("empty target must reserve every soon-to-be-created designator across the project")
 	}
 	globally := map[string]any{"components": []any{map[string]any{"componentType": "sheet"}, map[string]any{"componentType": "part", "designator": "OTHER_PAGE_R9", "primitiveId": "existing-other-page"}}}

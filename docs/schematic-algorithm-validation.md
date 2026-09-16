@@ -1,10 +1,11 @@
-# 原理图通用算法验证 — v1.5.0-dev.11
+# 原理图通用算法验证 — v1.5.0-dev.12
 
 2026-09-17。目标是通用算法，不是修好某一张原理图。离线原始 P1/P2 已通过。
-dev.10 安装后的新会话已通过本地版本门禁，并用新鲜 P1/P2 数据重算、组合和 dry-run；
-P2 实际写入完成后在严格门禁停止，页面已保存但未通过整页验收。由现场回读发现的空
-wire net 证据与独立线段解析问题已在 dev.11 源码中通用修复；dev.11 尚未安装或现场验证。
-P1 尚未 Apply。本记录不是 v1.5.0 发布验收。
+dev.11 安装后的新会话完成了 P2 只读复验，严格门禁通过。P1 使用新鲜现场数据重新完成
+求解、组合和 dry-run，但两次 Apply 都在第 1 步、任何 mutation 之前停止；第二次暴露出
+全工程位号唯一性守卫重复请求慢速器件身份、bbox 和引脚数据的问题。dev.12 已在源码中把
+该守卫缩减为最小跨页清单，同时保留下一步完整目标页守卫；尚未安装或现场验证。
+本记录不是 v1.5.0 发布验收。
 规范唯一来源为 [Skill 数据驱动架构](../skills/easyeda-agent/references/schematic-data.md)。
 
 ## 已实现的通用契约
@@ -150,9 +151,61 @@ dev.11 本地开发包已经形成；本会话不安装、不替换 daemon/Conne
 必须由下一全新会话执行 dev.11 本地版本门禁、重新读取现场
 并重建队列后，才能判断这两个现场 finding 是否消失以及 P2 是否完整通过。
 
+## dev.11 新会话复验与 dev.12 位号守卫修复（2026-09-17）
+
+dev.11 已安装后的全新会话通过本地版本门禁；CLI、Skill、daemon 与 Connector 均为
+`v1.5.0-dev.11`。现场证据保存在本地忽略目录
+`.easyeda/repair-20260914/live-dev11/`。
+
+- P2 只读复验通过：`sch check --strict` 为 `passed:true`；五处严格内部 X 均由不同物理
+  线岛的完整逐 pin 网络证据证明为无接点交叉，仅保留 INFO。严格 `layout-lint` 对 14 个
+  器件报告 0 overlap、0 tight、0 pin-coincidence、0 off-grid、0 out-of-sheet、0 缺测；
+  官方 DRC fatal/error/warn/info 均为 0，`sch gate --strict` 最终 `verdict:pass`。
+  与 dev.10 写后连接快照的 `connectivity-diff` 为空。该轮没有重新写 P2，属于 dev.11
+  规则对已保存页面的只读现场复验，不把它登记为一次新的 Apply。
+- P1 重新采集 17 个 part、61 条原始 wire 记录、17 个真实 Designator bbox 与新鲜纸张几何；
+  新鲜数据按 `primitiveId` 与 dev.10 基线一致，证明此前失败没有修改页面。随后重新完成
+  三区 `layout-plan --zones`、纸张规划、固定渲染、`compose --preserve-instances`，新生成的
+  188 步队列 dry-run 通过。
+- 第一次 P1 Apply 在第 1 步 `verify-project-unique-designators` 因队列携带的旧固定 window
+  已断开而在 2 ms 内停止。没有进入第 3 步首次清理动作，也没有 mutation；该次队列没有
+  resume，证据移至 `live-dev11/attempt1/`。随后重新生成不含固定 `--window`、只依赖队列
+  project/document 动态路由的队列。
+- 第二次仍在第 1 步停止：`schematic.components.list` 88,007 ms 后返回
+  `connector did not respond`，期间 Connector 重新注册、window ID 改变。journal 只有该
+  失败步骤；没有进入任何写步骤。失败后的新鲜回读与 Apply 前结果完全一致，旧队列未重试。
+- 第 1 步实际请求为 `allPages:true,tagPages:true`，同时夹带 `includeDeviceIdentity:true`、
+  `includeBBox:true`、`includePins:true`。该步骤本来只需检查跨页重复位号、已有实例句柄和
+  待创建位号不存在，却在逐页遍历时重复执行慢速身份、几何和引脚 hydration。历史最小
+  `allPages+tagPages` 读取约 0.35–3.5 秒；因此第二次失败不是浏览器缓存，也不是固定 window
+  路由，而是 compose 生成的跨页前检职责过重。
+
+dev.12 新增 `designatorsOnly` 期望模式。compose 的全工程前检现在只发送：
+
+```json
+{"allPages":true,"tagPages":true}
+```
+
+它只校验跨页重复位号、目标页已有 ref 对应的 `primitiveId`，以及待创建位号必须不存在；
+禁止夹带 device identity、bbox、pins、实例属性、drawing 或 ownership 期望。紧随其后的
+目标页守卫保持原有完整读取与验证，继续覆盖器件身份、实例属性、几何、完整引脚、网络/NC、
+导线和连接摘要；精简跨页读取没有降低实例保全门禁。新增回归覆盖最小字段通过、跨页重复
+拒绝、待建位号已占用拒绝、已有实例句柄改变拒绝，以及慢字段混入拒绝。
+
+dev.12 离线门禁已通过：`go test ./...`、Connector 331/331、`npm run typecheck`、
+`make lint-test blocks-audit modules-audit skill-check release-script-test`、Go 格式检查和
+`git diff --check` 均无失败。`make local-build VERSION=v1.5.0-dev.12
+DIST=dist/local-v1.5.0-dev.12` 已生成五平台 CLI、Connector、Skill 和安装脚本，全部资产
+checksum 通过；Darwin arm64 CLI 自报 `v1.5.0-dev.12`。
+
+dev.12 目前只完成源码、离线测试、Skill 契约、版本同步和本地开发包。它尚未安装，尚未从
+新会话执行本地版本门禁，也尚未重建并现场 Apply P1；因此不能把该修复写成 P1 已通过，
+更不能恢复或续跑任一 dev.11 队列。下一轮必须使用 dev.12 本地包，从新鲜快照重新生成
+队列后再验证。
+
 ## 明确边界
 
 有界窗口、姿态菜单与预算不是完备搜索；仍可能重复探索局部预算窗口。失败不证明全局无解，
 不能靠扩大预算、放松硬约束或手改最终坐标宣称解决。外围语义归属仍需显式输入。
 宿主接触语义现场证据限于已测 EasyEDA Pro 3.2.186；未知宿主行为须完整回读，不推定兼容。
-离线实例保全/回读守卫测试不等于新运行时现场验收；PCB 与正式发布均不在本轮执行范围。
+离线实例保全/回读守卫测试不等于 dev.12 运行时现场验收；PCB 与正式发布均不在本轮执行范围。

@@ -13,12 +13,13 @@ import (
 // list indexes. Pins is exhaustive per part; optional values select the facts to
 // check before placement, before wiring, or after the final topology readback.
 type schematicStateExpectation struct {
-	AbsentParts []string                            `json:"absentParts,omitempty"`
-	ExactParts  bool                                `json:"exactParts,omitempty"`
-	Parts       map[string]schematicPartExpectation `json:"parts"`
-	Drawing     *schematicDrawingExpectation        `json:"drawing,omitempty"`
-	Ownership   *schematicOwnershipExpectation      `json:"ownership,omitempty"`
-	SourceScene map[string]any                      `json:"sourceScene,omitempty"`
+	AbsentParts     []string                            `json:"absentParts,omitempty"`
+	ExactParts      bool                                `json:"exactParts,omitempty"`
+	DesignatorsOnly bool                                `json:"designatorsOnly,omitempty"`
+	Parts           map[string]schematicPartExpectation `json:"parts"`
+	Drawing         *schematicDrawingExpectation        `json:"drawing,omitempty"`
+	Ownership       *schematicOwnershipExpectation      `json:"ownership,omitempty"`
+	SourceScene     map[string]any                      `json:"sourceScene,omitempty"`
 }
 
 type schematicPartExpectation struct {
@@ -126,7 +127,10 @@ func validateSchematicExpectationStep(s *playbookStep) error {
 	if s.ExpectSchematic == nil {
 		return nil
 	}
-	if s.Action != "schematic.components.list" || s.Payload["includePins"] != true {
+	if s.Action != "schematic.components.list" {
+		return fmt.Errorf("expectSchematic requires action schematic.components.list")
+	}
+	if !s.ExpectSchematic.DesignatorsOnly && s.Payload["includePins"] != true {
 		return fmt.Errorf("expectSchematic requires action schematic.components.list with includePins:true")
 	}
 	for _, part := range s.ExpectSchematic.Parts {
@@ -160,8 +164,14 @@ func (e *schematicStateExpectation) validate() error {
 	}
 	for _, ref := range sortedStateKeys(e.Parts) {
 		part := e.Parts[ref]
-		if strings.TrimSpace(ref) == "" || part.Pins == nil {
+		if strings.TrimSpace(ref) == "" || (!e.DesignatorsOnly && part.Pins == nil) {
 			return fmt.Errorf("expectSchematic part %q requires a designator and exhaustive pins map", ref)
+		}
+		if e.DesignatorsOnly {
+			if part.Device != nil || part.X != nil || part.Y != nil || part.Rotation != nil || part.Mirror != nil || part.BBox != nil || part.Pins != nil || part.Instance != nil {
+				return fmt.Errorf("designatorsOnly part %q may only check primitiveId", ref)
+			}
+			continue
 		}
 		if part.Instance != nil {
 			if err := validateSchPreservedInstance(part.Instance); err != nil {
@@ -203,6 +213,9 @@ func (e *schematicStateExpectation) validate() error {
 		}
 	}
 	if e.Drawing != nil {
+		if e.DesignatorsOnly {
+			return fmt.Errorf("designatorsOnly cannot check drawing")
+		}
 		if err := e.Drawing.validate(); err != nil {
 			return err
 		}
@@ -308,6 +321,9 @@ func (e *schematicStateExpectation) check(result any, vars map[string]string) er
 		}
 		if want.PrimitiveID != "" && have["primitiveId"] != want.PrimitiveID {
 			return fmt.Errorf("%s primitiveId: got %v, want %s", ref, have["primitiveId"], want.PrimitiveID)
+		}
+		if expected.DesignatorsOnly {
+			continue
 		}
 		if want.Instance != nil {
 			if err := checkSchPreservedInstance(ref, want.Instance, have); err != nil {

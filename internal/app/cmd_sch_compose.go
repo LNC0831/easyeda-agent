@@ -536,6 +536,29 @@ func schCompositionExpectation(p *schCompositionPlan, final bool) *schematicStat
 	return e
 }
 
+// The project-wide preflight has one job: prove that refs already on the target
+// still identify the same instances and that refs about to be created do not
+// exist on another page. Device hydration, geometry and pin/net reads belong to
+// the following target-page guard. Keeping those expensive fields out of the
+// all-pages request avoids exporting/resolving every device while the connector
+// is cycling pages solely to detect duplicate designators.
+func projectDesignatorGuardStep(source *schematicStateExpectation) playbookStep {
+	guard := &schematicStateExpectation{
+		AbsentParts:     append([]string(nil), source.AbsentParts...),
+		DesignatorsOnly: true,
+		Parts:           map[string]schematicPartExpectation{},
+	}
+	for ref, part := range source.Parts {
+		guard.Parts[ref] = schematicPartExpectation{PrimitiveID: part.PrimitiveID}
+	}
+	return playbookStep{
+		ID:              "verify-project-unique-designators",
+		Action:          "schematic.components.list",
+		Payload:         map[string]any{"allPages": true, "tagPages": true},
+		ExpectSchematic: guard,
+	}
+}
+
 func schCompositionPlaybook(p *schCompositionPlan, before []byte, replace bool, preserveMode ...bool) (*playbook, error) {
 	preserve := len(preserveMode) > 0 && preserveMode[0]
 	if preserve && !replace {
@@ -644,7 +667,7 @@ func schCompositionPlaybook(p *schCompositionPlan, before []byte, replace bool, 
 		all.Drawing = nil
 		all.Ownership = nil
 		all.ExactParts = false
-		pb.Steps = append(pb.Steps, playbookStep{ID: "verify-project-unique-designators", Action: "schematic.components.list", Payload: map[string]any{"includePins": true, "includeBBox": true, "includeDeviceIdentity": true, "allPages": true, "tagPages": true}, ExpectSchematic: &all})
+		pb.Steps = append(pb.Steps, projectDesignatorGuardStep(&all))
 		pb.Steps = append(pb.Steps, playbookStep{ID: "verify-existing-composition", Action: "schematic.components.list", Payload: read, ExpectSchematic: final})
 	} else {
 		baseline := &schematicStateExpectation{ExactParts: true, Parts: map[string]schematicPartExpectation{}}
@@ -692,7 +715,7 @@ func schCompositionPlaybook(p *schCompositionPlan, before []byte, replace bool, 
 				all.AbsentParts = append(all.AbsentParts, c.Ref)
 			}
 		}
-		pb.Steps = append(pb.Steps, playbookStep{ID: "verify-project-unique-designators", Action: "schematic.components.list", Payload: map[string]any{"includePins": true, "includeBBox": true, "includeDeviceIdentity": true, "allPages": true, "tagPages": true}, ExpectSchematic: &all})
+		pb.Steps = append(pb.Steps, projectDesignatorGuardStep(&all))
 		var baselineAssertions map[string]string
 		if reuseUnwired {
 			baselineAssertions = map[string]string{"$.connectivitySummary.scope": "==activePage", "$.connectivitySummary.wires": "==0", "$.connectivitySummary.buses": "==0"}

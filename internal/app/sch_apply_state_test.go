@@ -139,6 +139,48 @@ func TestSchematicStateExpectationFormatAndPreflight(t *testing.T) {
 	}
 }
 
+func TestSchematicDesignatorOnlyExpectationNeedsNoSlowFields(t *testing.T) {
+	_, result := stateGuardFixture(t)
+	expected := &schematicStateExpectation{
+		DesignatorsOnly: true,
+		Parts: map[string]schematicPartExpectation{
+			"U1": {PrimitiveID: "u1"},
+			"C1": {PrimitiveID: "c1"},
+		},
+		AbsentParts: []string{"C9"},
+	}
+	step := playbookStep{
+		Action:          "schematic.components.list",
+		Payload:         map[string]any{"allPages": true, "tagPages": true},
+		ExpectSchematic: expected,
+	}
+	if err := validateSchematicExpectationStep(&step); err != nil {
+		t.Fatalf("minimal project designator guard rejected: %v", err)
+	}
+	if err := expected.check(result, nil); err != nil {
+		t.Fatalf("minimal project designator guard rejected matching inventory: %v", err)
+	}
+
+	components := result["components"].([]any)
+	result["components"] = append(components, map[string]any{
+		"componentType": "part",
+		"designator":    "U1",
+		"primitiveId":   "other-page-u1",
+	})
+	if err := expected.check(result, nil); err == nil || !strings.Contains(err.Error(), "duplicate part designator U1") {
+		t.Fatalf("cross-page duplicate passed minimal guard: %v", err)
+	}
+	result["components"] = components
+
+	bad := *expected
+	part := bad.Parts["U1"]
+	part.Pins = map[string]schematicPinExpectation{}
+	bad.Parts = map[string]schematicPartExpectation{"U1": part}
+	if err := bad.validate(); err == nil || !strings.Contains(err.Error(), "may only check primitiveId") {
+		t.Fatalf("designator-only guard accepted unrelated state: %v", err)
+	}
+}
+
 func TestSchematicStateExpectationVariables(t *testing.T) {
 	expected, result := stateGuardFixture(t)
 	part := expected.Parts["U1"]

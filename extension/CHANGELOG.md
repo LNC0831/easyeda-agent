@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.5.0-dev.12] — 2026-09-17 (local development only; fresh-session live validation required)
+
+- Split compose's project-wide duplicate-designator preflight from its target-page instance-preservation guard. The cross-page step now requests only the complete tagged component inventory and checks refs, primitive IDs and planned absences; it no longer repeats slow device-identity, bbox or pin hydration.
+- Keep the following target-page guard unchanged and exhaustive for device identity, native instance state, geometry, pins, nets, NC, wires and connectivity summary. Add positive and negative regressions for the minimal guard, cross-page duplicates and unrelated slow-field exclusion.
+- dev.11 completed the P2 read-only validation, but both fresh P1 Apply attempts stopped at step 1 before mutation when the unnecessarily heavy cross-page read triggered Connector re-registration. dev.12 must be installed and validated from a new session; neither dev.11 queue may be resumed.
+
 ## [1.5.0-dev.11] — 2026-09-17 (local development only; live revalidation pending)
 
 - Accept a proper interior X as verified non-contact when a host returns blank raw wire nets but each physical island still has complete, unique, mutually consistent official pin-netlist and marker evidence. Keep X islands separate and continue to reject missing/conflicting evidence plus endpoint, T and overlap contacts.

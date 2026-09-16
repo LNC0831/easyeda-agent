@@ -23,6 +23,11 @@
 生成器的输入、支持范围与位号/身份规则集中在 [schematic-data.md](schematic-data.md)。
 数据层校验用于发现结构问题，执行时的实时回读用于证明变更确已生效。
 
+compose 生成的全工程位号唯一性步骤使用 `schematic.components.list` 的
+`allPages:true,tagPages:true` 最小清单，只检查位号冲突、既有 primitiveId 和待建位号不存在；
+它不请求慢速 device identity、bbox 或 pins。紧随其后的目标页守卫仍读取完整
+device identity、bbox、pins、wires 与连接摘要，不能用前者替代后者。
+
 ## SCH Apply
 
 ```bash
