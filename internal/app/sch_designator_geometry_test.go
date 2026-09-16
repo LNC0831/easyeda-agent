@@ -148,6 +148,26 @@ func TestDesignatorCollisionSurfaces(t *testing.T) {
 	}
 }
 
+func TestDesignatorObservedFlatSegmentsDoNotInventConnector(t *testing.T) {
+	s, c, d := designatorGeometryFixture()
+	w := []schGroupWire{{
+		ID:     "wire",
+		Points: []float64{30, 30, 40, 30, 80, 80, 90, 80},
+		ObservedSegments: [][4]float64{
+			{30, 30, 40, 30},
+			{80, 80, 90, 80},
+		},
+	}}
+	if fs := schDesignatorFindings(s, d, c, w); len(fs) != 0 {
+		t.Fatalf("independent flat segments gained a phantom diagonal: %+v", fs)
+	}
+	w[0].ObservedSegments = append(w[0].ObservedSegments, [4]float64{40, 54, 80, 54})
+	fs := schDesignatorFindings(s, d, c, w)
+	if len(fs) != 1 || fs[0].Type != "designator-wire-overlap" {
+		t.Fatalf("real observed segment crossing escaped: %+v", fs)
+	}
+}
+
 func TestDesignatorDiagonalWire(t *testing.T) {
 	b := layoutBBox{MinX: 0, MinY: 0, MaxX: 10, MaxY: 10}
 	for _, tc := range []struct {

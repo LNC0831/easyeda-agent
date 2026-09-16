@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.5.0-dev.11] — 2026-09-17 (local development only; live revalidation pending)
+
+- Accept a proper interior X as verified non-contact when a host returns blank raw wire nets but each physical island still has complete, unique, mutually consistent official pin-netlist and marker evidence. Keep X islands separate and continue to reject missing/conflicting evidence plus endpoint, T and overlap contacts.
+- Preserve the official observed `flat-segments` encoding in the Go live survey so Designator collision checks evaluate each four-coordinate segment independently instead of inventing a tail-to-head diagonal between records.
+- Add positive and negative regressions for blank raw wire nets, missing/conflicting island evidence, phantom flat-segment connectors and real Designator crossings. dev.10 completed its P2 writes but stopped at the strict gate; dev.11 requires a fresh-session live revalidation and must not resume the old queue.
+
+## [1.5.0-dev.10] — 2026-09-17 (local development only; live revalidation pending)
+
+- Preserve strict `--preserve-instances` source-wire equality across playbook JSON save/reload. Normalize the generated source scene to JSON-native arrays so an unchanged wire list is accepted while added, removed, or changed wires still fail closed.
+- Add serialized-playbook regressions for wired and wire-free pages, including a negative unexpected-wire case. The dev.9 live queue stopped before its first design mutation; dev.10 must be installed and validated from a fresh snapshot rather than resuming that queue.
+
 ## [1.5.0-dev.9] — 2026-09-17 (local development only; Web Apply pending)
 
 - Add `sch layout-edit` for stable-ID core moves and D1.3-style pin-marker repair. Core moves translate one owned zone exactly once, preserve all other zones, and fix the requested core coordinate while replanning only its peripherals when a rigid move collides.

@@ -3603,13 +3603,22 @@ const schematicCheck: Handler = async (payload) => {
 	const verifiedSegments = new Set<number>();
 	for (const island of physicalIslands) {
 		const own = island.map(i => wireSegs[i]);
-		const names = new Set(own.map(w => w.net));
 		const onIsland = (p: { x: number; y: number }) => own.some(w => wirePointOnSegment(p, w.seg));
 		const witnesses = allPins.filter(p => p.designator && onIsland(p));
-		const expected = own[0]?.net ?? '';
-		const verified = netlistAvailable && !allPages && expected !== '' && names.size === 1
-			&& witnesses.length > 0 && witnesses.every(p => netlistPinNets.get(p.designator)?.get(p.number) === expected)
-			&& connectionMarkers.filter(onIsland).every(m => m.net === expected);
+		const markers = connectionMarkers.filter(onIsland);
+		const rawNets = own.map(w => w.net).filter(Boolean);
+		const pinNets = witnesses.map(p => netlistPinNets.get(p.designator)?.get(p.number) ?? '');
+		const markerNets = markers.map(m => m.net);
+		// Some supported host builds return an empty getState_Net() even for a
+		// compiled wire. Treat it as missing evidence, not as a contradictory
+		// network. A bare X is waived only when every pin/marker witness is
+		// present and all non-empty raw+pin+marker facts name exactly one net.
+		// At least one official pin witness is mandatory; marker names alone do
+		// not prove that the physical island made it into the compiled netlist.
+		const evidence = new Set([...rawNets, ...pinNets.filter(Boolean), ...markerNets.filter(Boolean)]);
+		const verified = netlistAvailable && !allPages
+			&& witnesses.length > 0 && pinNets.every(Boolean)
+			&& markerNets.every(Boolean) && evidence.size === 1;
 		if (verified) island.forEach(i => verifiedSegments.add(i));
 	}
 	const CROSS_CAP = 50;

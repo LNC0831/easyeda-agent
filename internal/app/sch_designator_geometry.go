@@ -199,8 +199,8 @@ func schDesignatorFindings(s schFrameSurvey, rows []schDesignatorGeometry, comps
 			}
 		}
 		for _, w := range wires {
-			for j := 0; j+3 < len(w.Points); j += 2 {
-				if schSegmentCrossesBox(w.Points[j], w.Points[j+1], w.Points[j+2], w.Points[j+3], *d.BBox) {
+			for _, seg := range schDesignatorWireSegments(w) {
+				if schSegmentCrossesBox(seg[0], seg[1], seg[2], seg[3], *d.BBox) {
 					out = append(out, checkFinding{Type: "designator-wire-overlap", Level: "warn", PrimitiveId: d.ID, Designator: d.Value, WirePrimitiveId: w.ID, BBox: d.BBox, Message: "wire crosses Designator text bbox"})
 					break
 				}
@@ -208,6 +208,21 @@ func schDesignatorFindings(s schFrameSurvey, rows []schDesignatorGeometry, comps
 		}
 	}
 	return out
+}
+
+// schDesignatorWireSegments preserves the observed wire encoding. Current
+// EasyEDA getState_Line flat arrays are independent four-coordinate records,
+// while older tests/callers supplied a continuous vertex polyline. Never join
+// independent observed records with a phantom tail-to-head diagonal.
+func schDesignatorWireSegments(w schGroupWire) [][4]float64 {
+	if len(w.ObservedSegments) > 0 {
+		return w.ObservedSegments
+	}
+	segments := make([][4]float64, 0, len(w.Points)/2)
+	for i := 0; i+3 < len(w.Points); i += 2 {
+		segments = append(segments, [4]float64{w.Points[i], w.Points[i+1], w.Points[i+2], w.Points[i+3]})
+	}
+	return segments
 }
 
 // Open-box segment intersection, including diagonal wires; a tangent does not

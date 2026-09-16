@@ -1,8 +1,10 @@
-# 原理图通用算法验证 — v1.5.0-dev.9
+# 原理图通用算法验证 — v1.5.0-dev.11
 
-2026-09-17。目标是通用算法，不是修好某一张原理图。离线 P1/P2 已通过，统一 dev.9
-本地包已经构建但**没有安装**，当前 CLI、Skill、daemon 和
-Web Connector 均未在本轮替换，也没有现场 Apply。本记录不是 v1.5.0 发布验收。
+2026-09-17。目标是通用算法，不是修好某一张原理图。离线原始 P1/P2 已通过。
+dev.10 安装后的新会话已通过本地版本门禁，并用新鲜 P1/P2 数据重算、组合和 dry-run；
+P2 实际写入完成后在严格门禁停止，页面已保存但未通过整页验收。由现场回读发现的空
+wire net 证据与独立线段解析问题已在 dev.11 源码中通用修复；dev.11 尚未安装或现场验证。
+P1 尚未 Apply。本记录不是 v1.5.0 发布验收。
 规范唯一来源为 [Skill 数据驱动架构](../skills/easyeda-agent/references/schematic-data.md)。
 
 ## 已实现的通用契约
@@ -41,6 +43,7 @@ Web Connector 均未在本轮替换，也没有现场 Apply。本记录不是 v1
 | `sch_layout_report_test.go` / `sch_layout_feasibility_test.go` | 真实冲突与总预算报告、多重包装、早期失败姿态、报告 IO 失败、输入/输出别名保护 |
 | `sch_wire_contact_test.go` / `internal/schguard` | ABAB 边界引脚、X/T、共线 waypoint、接触分区、方向、NC 和缺证据拒绝 |
 | `schematic-wire-topology.test.ts` | 官方独立段解码、交叉证据、实际接触、级联保全及旧操作安全拒绝 |
+| `sch_designator_geometry_test.go` | 官方 flat-segments 独立四元段、位号碰线正例和禁止虚构跨段斜线 |
 | `sch_layout_edit_test.go` / `sch_layout_marker_anchor_test.go` | 核心与多级外围单次跟随、碰撞后固定核心局部重排、区外不变、跨区线树拒绝、重命名/输入不可变、预算终止、D1.3 外向支路及 pin/wire-tree 锚定 |
 | `schematic_pin_repair_test.go` | 旧错误存在时的作用域替换、陈旧指纹、篡改标签朝向、部分删除、连接超时/partial、范围外对象变化全部失败关闭 |
 
@@ -54,7 +57,7 @@ Web Connector 均未在本轮替换，也没有现场 Apply。本记录不是 v1
   BUCK_3V3 分别使用 6927/4469/20597 个候选；A* 展开 1682/0/38 个节点，无重布。
 - 保留的原始 P2 五 zone（源 SHA-256 `c8b88e44…`）全部完成；仅 MCU 使用 A* 53 个节点，
   无重布。dev.7 的 184652 节点/4 次重布是另一个保留压力输入，不与本次原始输入混称。
-- 连接器完整测试 328 项，0 失败、0 跳过；`npm run typecheck`。
+- 连接器完整测试 331 项，0 失败、0 跳过；`npm run typecheck`。
 - `make lint-test blocks-audit modules-audit`；1027 个块引脚引用无缺失/未知，35 条模块记录通过。
 - `make skill-check release-script-test`；63 项脚本测试通过。
 - `git diff --check`。
@@ -63,11 +66,89 @@ Web Connector 均未在本轮替换，也没有现场 Apply。本记录不是 v1
   `0ee8864423c5c68d310db13e4fbef9b6b97c4cad27f54f1454121c27dcc41c24` 与
   `8e53d6e4e240e70a16bec8c539212a5c588d262856e20d68b0a5535e4db8ee9b`，
   和当前源码结果逐字节一致；输入哈希与报告中的 `sourceSha256` 一致。
-- dev.9 尚未替换当前运行时。后续安装 CLI/Skill/daemon/Connector 后，必须结束安装会话，
-  由下一全新会话执行首条本地版本门禁，才能生成新鲜现场快照并 Apply。
+- 这组离线证据形成时 dev.9 尚未替换运行时；后续现场记录见下一节。安装 CLI/Skill/
+  daemon/Connector 后必须结束安装会话，由下一全新会话执行首条本地版本门禁，才能生成
+  新鲜现场快照并 Apply。
 
 这些 Go/连接器测试由已有 CI 的 `make test` 和 `npm test` 自动发现，不依赖 Agent
 记住单独跑某个测试文件。以上是本地证据；在对应提交的远端 CI 实际完成前不声称 CI 已通过。
+
+## dev.9 新会话现场验证（2026-09-17）
+
+第一条命令 `easyeda update --local-dir dist/local-v1.5.0-dev.9 --check --exit-code`
+退出 0，输出 READY；CLI、完整 Skill、本地资产、daemon 与 Connector 精确同版。
+实际宿主 EasyEDA Pro 3.2.186，工程 ceshi。以下新增证据保存在本地忽略目录
+`.easyeda/repair-20260914/live-dev9/`，不把旧快照登记为新现场结果。
+
+- P1 严格门禁失败：10 个 pin-exit-direction、4 个 wire-through-body、1 个 orphan-stub。
+  P2 严格门禁失败：11 个 pin-exit-direction。两页官方 DRC 均无阻塞，不能覆盖几何失败。
+- 上文原始输入哈希对应 `generated/layout-zones-p*.json`，缺少位号 bbox 和官方引脚方向；
+  不能把它们的求解成功等同于包含这些测量的完整布局成功。
+- 本轮补有位号/方向的 P1 输入也完成三个区求解，源 SHA-256
+  `a65f2f8d5f8bf3919bb2710647924d323b76445b6c4b0e4d1ff7bec481bf963a`；
+  分别使用 160819/10986/20589 个候选，位号 bbox 与新鲜测量一致。
+  这是区内离线成功，尚未进行本轮 P1 纸张转换或 Apply。
+- P2 本轮使用 `live-dev4/generated-direction/layout-zones-p2.json`
+  （SHA-256 `1ce722364aa9a32ef172f90c4770a3aa87f7ac60f8b4fe278e8cf11b76a01391`），
+  dev.9 完成五区求解、一页 Z 型组合、固定渲染和保留实例转换。新鲜 14 个器件的完整字段
+  与 dev.5 快照一致；新鲜逐器件位号测量也完全一致。纸张符号未变，沿用已保存的官方
+  符号源内框/图签证据，未将其称为新鲜工程导出。
+- 113 步 `--preserve-instances` 队列 dry-run 通过。真实执行第 1 步成功，第 2 步
+  `verify-source-before-reset` 报 `source-drift: scene.wires`；第 3 步清理未执行。
+  拒绝后的原始回读确认组件、导线、连接计数逐字段不变。没有修复后保存或完整 Apply 成功。
+- 根因：`schDesignatorScene` 生成 `[]string`，队列 JSON 重载后 `sourceScene.wires`
+  成为 `[]any`，`reflect.DeepEqual` 将同内容判成漂移。原测试只检查内存队列，漏掉真实
+  文件往返。源码改为生成 JSON 原生数组，保持逐条导线严格比较；没有忽略导线或降低守卫。
+  新测试覆盖有线/无线队列序列化后未变源通过、新增导线拒绝；修复前复现失败，修复后
+  `go test ./...`、`make lint-test` 和 `git diff --check` 通过。
+  该修复不改变 CLI/Skill 接口和既有保全契约。
+
+当前安装运行时仍为 dev.9，源码修复尚未打包替换。后续需构建新的开发版本、完整安装后
+结束安装会话，再由新会话首条版本门禁放行；重新采集、生成并完整执行队列，不续跑旧队列。
+本轮没有重启/替换任何运行时，没有 PCB 操作、发布或清理原工程。
+
+证据目录中的 `p2-before.json` 与 `p2-before-retry.json` 是失败命令遗留的零字节文件，
+不作为前后对账证据；拒绝后的完整回读为 `p2-after-refusal.json`，执行阶段以 journal 为准。
+`verification-summary.json` 保留零字节文件哈希是为了暴露采集失败，而不是把空文件算作快照。
+
+## dev.10 新会话现场验证与 dev.11 修复（2026-09-17）
+
+第一条命令 `easyeda update --local-dir dist/local-v1.5.0-dev.10 --check --exit-code`
+退出 0，输出 READY；CLI、完整 Skill、本地资产、daemon 与 Connector 精确同版。
+新鲜现场证据保存在本地忽略目录 `.easyeda/repair-20260914/live-dev10/`。
+
+- P1/P2 均从新鲜组件、连接、纸张和位号读取重新生成源输入，没有复用 dev.9 队列。
+  P1 源 SHA-256 为 `a65f2f8d5f8bf3919bb2710647924d323b76445b6c4b0e4d1ff7bec481bf963a`，
+  三个 zone 全部求解；P2 源 SHA-256 为
+  `1ce722364aa9a32ef172f90c4770a3aa87f7ac60f8b4fe278e8cf11b76a01391`，五个 zone 全部求解。
+- 两页都完成实测纸张上的一页 Z 型组合、固定渲染和保留实例转换。P1 188 步、P2 113 步
+  队列的 dry-run 均通过；相关 zones、report、page、composition、SVG、playbook 和 dry-run
+  输出均留在该证据目录。
+- 仅执行 P2。第 1、2 步成功，现场证明 dev.10 的 JSON 重载 source-wire 守卫修复有效；
+  第 1–108 步设计动作全部成功。第 109 步 `electrical-check` 因 `$.passed=false` 停止，
+  不是 timeout/partial，旧队列不可 resume。P1 未 Apply。
+- P2 写后回读为 14 个 part、25 个物理线树、0 bridge、0 orphan；严格 layout-lint 的
+  overlap、tight、pin coincidence、off-grid、out-of-sheet 均为 0，无必检缺测；官方 DRC
+  fatal/error/warn/info 均为 0。但 `sch gate --strict` 仍因 5 个内部 X ERROR 和 1 个
+  Designator-wire WARN 失败，不能称完整通过。页面已显式保存，官方导图已留档。
+- 五个 X 的原始段都是不同 primitive 的严格内部交叉，交点没有端点、引脚或 marker，
+  bridge-check 也证明物理线岛没有合并。根因是该宿主对实际联网导线仍可能返回空
+  `wire.getState_Net()`；旧规则强制 raw wire net 非空，导致完整逐 pin 网表证据无法举证。
+- Designator 报警的目标导线也没有穿过 R7 位号 bbox。根因是官方 rawLine 为彼此独立的
+  四坐标段数组，Go 检查却把上一段尾点与下一段起点连成了不存在的对角线。
+- dev.11 改为按每个物理岛汇总 raw wire、逐 pin 官方网表及 marker 的全部非空证据。
+  raw wire net 可缺失，但至少一个逐 pin witness、每个 pin/marker 证据完整且全部唯一一致；
+  缺失或冲突仍为 ERROR，X 仍不合并，端点/T/重叠规则未放宽。Go 同时保留官方
+  `flat-segments`，位号只与真实独立段求交。正反单元回归均已加入。
+- dev.11 离线门禁已通过：`go test ./...`、Connector 331/331、`npm run typecheck`、
+  `make lint-test blocks-audit modules-audit skill-check release-script-test` 和
+  `git diff --check`。`make local-build VERSION=v1.5.0-dev.11 DIST=dist/local-v1.5.0-dev.11`
+  成功，五平台 CLI、Connector、Skill、安装脚本的 checksum
+  全部通过；Darwin arm64 CLI 自报 `v1.5.0-dev.11`。这些仍是离线与打包证据。
+
+dev.11 本地开发包已经形成；本会话不安装、不替换 daemon/Connector，也不继续 P1 Apply。
+必须由下一全新会话执行 dev.11 本地版本门禁、重新读取现场
+并重建队列后，才能判断这两个现场 finding 是否消失以及 P2 是否完整通过。
 
 ## 明确边界
 

@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,6 +93,40 @@ func TestPreserveInstancesQueueNeverRecreatesAndGuardsEveryPhase(t *testing.T) {
 	_, clear := composeStep(t, pb, "reset-drawing-preserving-instances")
 	if clear.Flags["preserve-parts"] != true || clear.Flags["part-ids"] == "" {
 		t.Fatal("clear has no explicit protected set")
+	}
+}
+
+func TestPreserveInstancesSourceGuardSurvivesPlaybookJSON(t *testing.T) {
+	for _, withWire := range []bool{false, true} {
+		t.Run(fmt.Sprint("with-wire-", withWire), func(t *testing.T) {
+			p, env := preserveComposeFixture(t)
+			result := env["result"].(map[string]any)
+			result["wires"] = []any{}
+			if withWire {
+				result["wires"] = []any{map[string]any{"primitiveId": "wire-source", "net": "", "x0": 0.0, "y0": 0.0, "x1": 20.0, "y1": 0.0}}
+			}
+			result["connectivitySummary"].(map[string]any)["wires"] = float64(len(result["wires"].([]any)))
+			pb, err := schCompositionPlaybook(p, composeApplyBytes(t, env), true, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(pb)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var loaded playbook
+			if err := json.Unmarshal(data, &loaded); err != nil {
+				t.Fatal(err)
+			}
+			_, step := composeStep(t, &loaded, "verify-source-before-reset")
+			if err := step.ExpectSchematic.check(result, nil); err != nil {
+				t.Fatal("unchanged source rejected after queue reload:", err)
+			}
+			result["wires"] = append(result["wires"].([]any), map[string]any{"primitiveId": "unexpected-wire", "x0": 5.0, "y0": 0.0, "x1": 25.0, "y1": 0.0})
+			if err := step.ExpectSchematic.check(result, nil); err == nil || !strings.Contains(err.Error(), "source-drift") {
+				t.Fatal("wire drift accepted after queue reload:", err)
+			}
+		})
 	}
 }
 

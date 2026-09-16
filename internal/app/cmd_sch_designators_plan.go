@@ -380,7 +380,14 @@ func schDesignatorScene(result map[string]any) (map[string]any, error) {
 		encoded = append(encoded, string(b))
 	}
 	sort.Strings(encoded)
-	out["wires"], out["connectivitySummary"] = encoded, result["connectivitySummary"]
+	// Source scenes also travel through playbook JSON. Keep the array in the
+	// same JSON-native form produced by Unmarshal, so unchanged wires compare
+	// equally before and after saving/reloading the queue (including no wires).
+	wireValues := make([]any, len(encoded))
+	for i, wire := range encoded {
+		wireValues[i] = wire
+	}
+	out["wires"], out["connectivitySummary"] = wireValues, result["connectivitySummary"]
 	return out, nil
 }
 

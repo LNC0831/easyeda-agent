@@ -77,7 +77,7 @@ test('cascade removes only target-exclusive physical island; same primitive cros
 	assert.throws(() => planSchDeleteCascadeTrees(targets,[{id:'bad',points:[0,0,10,0,10,20]}],marker,survivor));
 });
 
-function installScene(t: { after: (f: () => void) => void }, opts: { sameNet?: boolean; missingNetlist?: boolean; markerAtCross?: boolean; malformed?: boolean; pinReadFails?: boolean; tee?: boolean } = {}) {
+function installScene(t: { after: (f: () => void) => void }, opts: { sameNet?: boolean; emptyWireNet?: boolean; missingPinNet?: boolean; missingNetlist?: boolean; markerAtCross?: boolean; markerConflict?: boolean; malformed?: boolean; pinReadFails?: boolean; tee?: boolean } = {}) {
 	const globals = globalThis as any, previous = globals.eda;
 	t.after(() => { globals.eda = previous; });
 	const names = ['A','A',opts.sameNet ? 'A' : 'B',opts.sameNet ? 'A' : 'B'];
@@ -86,8 +86,11 @@ function installScene(t: { after: (f: () => void) => void }, opts: { sameNet?: b
 		getState_PrimitiveId: () => `p${i}`, getState_ComponentType: () => 'part',
 		getState_Designator: () => `R${i+1}`, getState_X: () => x, getState_Y: () => y,
 	}));
-	const markers = opts.markerAtCross ? [{getState_PrimitiveId:()=> 'marker',getState_ComponentType:()=> 'netflag',getState_X:()=>0,getState_Y:()=>0,getState_Net:()=> 'A'}] : [];
-	const netlist = { components: Object.fromEntries(coords.map((_,i) => [`p${i}`, {props:{Designator:`R${i+1}`},pinInfoMap:{one:{number:'1',net:names[i]}}}])) };
+	const markers = [
+		...(opts.markerAtCross ? [{getState_PrimitiveId:()=> 'marker',getState_ComponentType:()=> 'netflag',getState_X:()=>0,getState_Y:()=>0,getState_Net:()=> 'A'}] : []),
+		...(opts.markerConflict ? [{getState_PrimitiveId:()=> 'conflict',getState_ComponentType:()=> 'netflag',getState_X:()=>-10,getState_Y:()=>0,getState_Net:()=> 'B'}] : []),
+	];
+	const netlist = { components: Object.fromEntries(coords.map((_,i) => [`p${i}`, {props:{Designator:`R${i+1}`},pinInfoMap:{one:{number:'1',net:opts.missingPinNet && i === 1 ? '' : names[i]}}}])) };
 	globals.eda = {
 		sch_PrimitiveComponent: {
 			getAll: async () => [...parts,...markers],
@@ -97,7 +100,7 @@ function installScene(t: { after: (f: () => void) => void }, opts: { sameNet?: b
 				return i<0 ? [] : [{getState_PinNumber:()=> '1',getState_PinName:()=> '1',getState_NoConnected:()=>false,getState_X:()=>coords[i][0],getState_Y:()=>coords[i][1]}];
 			},
 		},
-		sch_PrimitiveWire: { getAll: async () => [wire('h',opts.malformed ? [0,0,10,0,10,20] : H,'A'),wire('v',opts.tee ? [0,-20,0,0] : V,names[2])] },
+		sch_PrimitiveWire: { getAll: async () => [wire('h',opts.malformed ? [0,0,10,0,10,20] : H,opts.emptyWireNet ? '' : 'A'),wire('v',opts.tee ? [0,-20,0,0] : V,opts.emptyWireNet ? '' : names[2])] },
 		sch_ManufactureData: {getNetlistFile: async () => opts.missingNetlist ? undefined : {text:async()=>JSON.stringify(netlist)}},
 	};
 }
@@ -110,6 +113,20 @@ test('check gives bare X INFO only with complete pin evidence; ordinary clean X 
 	assert.equal(out.result.findings[0].type,'wire-crossing');
 	assert.equal(out.result.findings[0].level,'info');
 	assert.deepEqual(out.result.findings[0].segments.map((s:any)=>s.primitiveId),['h','v']);
+});
+
+test('check derives bare-X evidence from official pins when raw wire nets are empty', async t => {
+	installScene(t,{emptyWireNet:true});
+	const out:any=await runAction('schematic.check',{});
+	assert.equal(out.result.passed,true);
+	assert.equal(out.result.findings.find((f:any)=>f.type==='wire-crossing')?.level,'info');
+});
+
+for (const opts of [{emptyWireNet:true,missingPinNet:true},{emptyWireNet:true,markerConflict:true}]) test(`empty raw wire net still fails closed on incomplete/conflicting island evidence ${JSON.stringify(opts)}`,async t=>{
+	installScene(t,opts);
+	const out:any=await runAction('schematic.check',{});
+	assert.equal(out.result.passed,false);
+	assert.equal(out.result.findings.find((f:any)=>f.type==='wire-crossing')?.level,'error');
 });
 
 for (const opts of [{missingNetlist:true},{markerAtCross:true}]) test(`check does not waive ambiguous/anchored X ${JSON.stringify(opts)}`,async t=>{

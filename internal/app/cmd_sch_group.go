@@ -371,8 +371,9 @@ const schGroupPerpTol = 1.0
 // debug.exec_js hatch — the components.list `wires` payload carries segments
 // but drops the primitiveId, and group-move must name the wire to move it).
 type schGroupWire struct {
-	ID     string
-	Points []float64 // flattened vertices x0,y0,x1,y1,…
+	ID               string
+	Points           []float64    // legacy continuous vertices x0,y0,x1,y1,…
+	ObservedSegments [][4]float64 // official flat-segments: each record is independent
 }
 
 // schGroupFlag is one netflag/netport/netlabel anchor.
@@ -783,7 +784,18 @@ return { wires: out };`
 			pts = append(pts, f)
 		}
 		if valid {
-			out = append(out, schGroupWire{ID: id, Points: pts})
+			wire := schGroupWire{ID: id, Points: pts}
+			// The current official API encodes observed geometry as independent
+			// [x0,y0,x1,y1] records. Keep that provenance instead of later
+			// inventing a connector from one record's end to the next record's
+			// start. Points remains populated for legacy group-move callers.
+			if len(pts)%4 == 0 {
+				wire.ObservedSegments = make([][4]float64, 0, len(pts)/4)
+				for i := 0; i+3 < len(pts); i += 4 {
+					wire.ObservedSegments = append(wire.ObservedSegments, [4]float64{pts[i], pts[i+1], pts[i+2], pts[i+3]})
+				}
+			}
+			out = append(out, wire)
 		}
 	}
 	return out, nil
