@@ -44,6 +44,11 @@
 
 线宽公差 **±20%**，设计时留余量。
 
+`pcb check` 必须保留板载 Safe Spacing 的对象对维度：Track↔Track、Track↔Pad/Via
+可能不是同一个值（嘉立创 EDA 双层板实测默认分别为 4mil、6mil）。不得取两者最大值后
+统一套用，否则会把符合原生 DRC 的 Track↔Track 间距误报为错误；最终仍以同一板载规则下的
+原生 `pcb drc` 为裁决。
+
 ### 1.2 推荐设计值（easyeda-agent net-class 默认）
 
 | 网络角色 | 推荐线宽 | 说明 |

@@ -580,7 +580,10 @@ func findTrackOverPad(tracks []pcbTrack, pads []pcbPadP) []pcbCheckFinding {
 // reports width/height (halfExt(), nominal fallback for old connectors / polygon
 // pads); vias use their real outer radius. Capped so a wall of violations can't
 // drown the report — the count says how many were cut.
-func findClearanceViolations(tracks []pcbTrack, pads []pcbPadP, vias []pcbViaP, slots []pcbSlotP, clearance float64) []pcbCheckFinding {
+func findClearanceViolations(tracks []pcbTrack, pads []pcbPadP, vias []pcbViaP, slots []pcbSlotP, clearance, trackTrackClearance float64) []pcbCheckFinding {
+	if trackTrackClearance <= 0 {
+		trackTrackClearance = clearance // compatibility for callers without a pair-specific rule
+	}
 	const cap = 40
 	var out []pcbCheckFinding
 	dropped := 0
@@ -674,12 +677,12 @@ func findClearanceViolations(tracks []pcbTrack, pads []pcbPadP, vias []pcbViaP, 
 			// flagging the near-misses beside them. Crossing copper is the worst
 			// case, so it must always report.
 			centerD := segSegDist(a.X1, a.Y1, a.X2, a.Y2, b.X1, b.Y1, b.X2, b.Y2)
-			if edgeD := centerD - a.Width/2 - b.Width/2; edgeD < clearance {
+			if edgeD := centerD - a.Width/2 - b.Width/2; edgeD < trackTrackClearance {
 				mx, my := (a.X1+a.X2)/2, (a.Y1+a.Y2)/2
 				add(pcbCheckFinding{
 					Type: "clearance", Level: "ERROR", Nets: uniqStr([]string{a.Net, b.Net}), Layer: a.Layer,
 					Primitives: []string{a.ID, b.ID}, At: &pcbXY{round2(mx), round2(my)},
-					Message: fmt.Sprintf("tracks (net %s / %s) run %.1fmil apart — under the %.0fmil spacing rule", a.Net, b.Net, math.Max(edgeD, 0), clearance) + docRule("1.1", "最小间距"),
+					Message: fmt.Sprintf("tracks (net %s / %s) run %.1fmil apart — under the %.0fmil track-to-track spacing rule", a.Net, b.Net, math.Max(edgeD, 0), trackTrackClearance) + docRule("1.1", "最小间距"),
 				})
 			}
 		}
@@ -1709,7 +1712,7 @@ func gatherPcbCheckReport(cfg *appConfig, window string, couplingW float64, chec
 		fmt.Fprintf(stderr, "warning: clearance check runs without slot/cutout data (%v)\n", serr)
 		slots = nil
 	}
-	for _, f := range findClearanceViolations(tracks, pads, vias, slots, clearance) {
+	for _, f := range findClearanceViolations(tracks, pads, vias, slots, clearance, rules.clearanceTrackTrackMil) {
 		rep.Findings = append(rep.Findings, f)
 		rep.Summary.Clearance++
 		rep.Summary.Errors++

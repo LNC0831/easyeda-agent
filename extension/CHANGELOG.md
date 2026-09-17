@@ -1,10 +1,13 @@
 # Changelog
 
-## [1.5.0-dev.15] — 2026-09-17 (local development only; fresh-session live validation required)
+## [1.5.1] — 2026-09-17
 
 - Add offline `sch zone-review` ownership diagnostics and run them automatically before `layout-plan --zones`. Reports preserve source hashes and explicit component/pin/net evidence for multi-core hints, non-rail subgraphs detached from the declared core, and rail-only attachment endpoints, while leaving the source JSON and Apply state untouched for AI review.
 - Keep source rotation authorization intact when a reviewed component becomes the zone core. The effective solver permission is narrowed to the measured core angle, preserving the fixed anchor without requiring the AI to rewrite component evidence.
 - Add `lib device validate --spec` as an offline preflight for datasheet-backed library authoring. Complete Device builds now require manufacturer/MPN/package evidence with source pages, a declared land-pattern basis, valid symbol/footprint geometry, and an exact pin-to-pad mapping before any EasyEDA mutation. Route the public Skill through the new PDF-reading workflow and provide a reusable JSON example.
+- Preserve the live Safe Spacing matrix's object-pair dimension in `pcb check`: Track↔Track now uses its own rule instead of the larger Track↔Pad/Via routing clearance (#218).
+- Decode the verified board-outline `ARC,signedAngle,endX,endY` source format with direction-checked ≤2° sampling, and select a unique containing outer ring from multi-polyline outlines while keeping unknown curves and ambiguous rings fail-closed (#215).
+- Refuse repeated Symbol/Footprint library builds before mutation when the opened asset already contains supported primitives or its inventory cannot be proven empty, preventing invisible duplicate pads and pins without relying on destructive replace semantics (#204).
 
 ## [1.5.0-dev.14] — 2026-09-17 (local development only; fresh-session live validation required)
 

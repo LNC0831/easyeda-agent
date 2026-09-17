@@ -290,19 +290,21 @@ type boardSnapshot struct {
 
 // boardRules 是 pcbRules 的可序列化投影（pcbRules 字段不导出，进不了 fixture）。
 type boardRules struct {
-	ClearanceMil     float64 `json:"clearanceMil"`
-	TrackWidthMil    float64 `json:"trackWidthMil"`
-	PowerWidthMil    float64 `json:"powerWidthMil"`
-	TrackWidthMinMil float64 `json:"trackWidthMinMil"`
-	ViaDrillMil      float64 `json:"viaDrillMil"`
-	ViaDiameterMil   float64 `json:"viaDiameterMil"`
-	CopperToEdgeMil  float64 `json:"copperToEdgeMil"`
-	Source           string  `json:"source"` // live | fallback
+	ClearanceMil           float64 `json:"clearanceMil"`
+	ClearanceTrackTrackMil float64 `json:"clearanceTrackTrackMil,omitempty"`
+	TrackWidthMil          float64 `json:"trackWidthMil"`
+	PowerWidthMil          float64 `json:"powerWidthMil"`
+	TrackWidthMinMil       float64 `json:"trackWidthMinMil"`
+	ViaDrillMil            float64 `json:"viaDrillMil"`
+	ViaDiameterMil         float64 `json:"viaDiameterMil"`
+	CopperToEdgeMil        float64 `json:"copperToEdgeMil"`
+	Source                 string  `json:"source"` // live | fallback
 }
 
 func rulesToBoard(r pcbRules) *boardRules {
 	return &boardRules{
-		ClearanceMil: r.clearanceMil, TrackWidthMil: r.trackWidthMil,
+		ClearanceMil: r.clearanceMil, ClearanceTrackTrackMil: r.clearanceTrackTrackMil,
+		TrackWidthMil: r.trackWidthMil,
 		PowerWidthMil: r.powerWidthMil, TrackWidthMinMil: r.trackWidthMinMil,
 		ViaDrillMil: r.viaDrillMil, ViaDiameterMil: r.viaDiameterMil,
 		CopperToEdgeMil: r.copperToEdgeMil, Source: r.source,
@@ -313,8 +315,15 @@ func (b *boardRules) toPcbRules() pcbRules {
 	if b == nil {
 		return defaultPcbRules()
 	}
+	trackTrack := b.ClearanceTrackTrackMil
+	if trackTrack <= 0 {
+		// Old snapshots predate pair-specific spacing. Preserve their former,
+		// conservative single-scalar behavior instead of silently assuming 4mil.
+		trackTrack = b.ClearanceMil
+	}
 	return pcbRules{
-		clearanceMil: b.ClearanceMil, trackWidthMil: b.TrackWidthMil,
+		clearanceMil: b.ClearanceMil, clearanceTrackTrackMil: trackTrack,
+		trackWidthMil: b.TrackWidthMil,
 		powerWidthMil: b.PowerWidthMil, trackWidthMinMil: b.TrackWidthMinMil,
 		viaDrillMil: b.ViaDrillMil, viaDiameterMil: b.ViaDiameterMil,
 		copperToEdgeMil: b.CopperToEdgeMil, source: b.Source,

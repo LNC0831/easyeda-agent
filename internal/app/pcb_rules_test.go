@@ -71,6 +71,9 @@ func TestParsePcbRules_Live(t *testing.T) {
 	if !near(r.clearanceMil, 6) {
 		t.Errorf("clearance=%.2f, want ~6mil (track-to-pad, the binding rule)", r.clearanceMil)
 	}
+	if !near(r.clearanceTrackTrackMil, 4) {
+		t.Errorf("track-to-track clearance=%.2f, want ~4mil (pair-specific live rule)", r.clearanceTrackTrackMil)
+	}
 	if !near(r.viaDrillMil, 12) {
 		t.Errorf("viaDrill=%.2f, want ~12mil", r.viaDrillMil)
 	}
@@ -89,7 +92,7 @@ func TestParsePcbRules_Fallback(t *testing.T) {
 		t.Errorf("source=%q, want fallback", r.source)
 	}
 	d := defaultPcbRules()
-	if r.clearanceMil != d.clearanceMil || r.trackWidthMil != d.trackWidthMil {
+	if r.clearanceMil != d.clearanceMil || r.clearanceTrackTrackMil != d.clearanceTrackTrackMil || r.trackWidthMil != d.trackWidthMil {
 		t.Errorf("fallback mismatch: %+v vs %+v", r, d)
 	}
 }

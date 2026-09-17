@@ -4635,6 +4635,45 @@ function primitiveIdOf(primitive: unknown): string {
 	return typeof id === 'string' ? id : '';
 }
 
+type LibraryBuildInventoryReader = {
+	key: string;
+	getAllPrimitiveId: () => Promise<Array<string>>;
+};
+
+/**
+ * `library.*.build` is a one-shot authoring operation, not append/replace.
+ * Opening the editor is read-only; every supported primitive inventory must be
+ * proven empty before the first create call.  Unknown/incomplete inventory is
+ * refused too, because guessing "empty" would recreate #204's invisible
+ * duplicate pads/pins.
+ */
+async function requireEmptyLibraryBuildTarget(label: string, readers: Array<LibraryBuildInventoryReader>): Promise<void> {
+	let inventories: Array<{ key: string; ids: Array<string> }>;
+	try {
+		inventories = await Promise.all(readers.map(async reader => {
+			const ids = await reader.getAllPrimitiveId();
+			if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string' || !id)) {
+				throw new Error(`${reader.key} inventory returned an invalid primitive-id list`);
+			}
+			return { key: reader.key, ids };
+		}));
+	}
+	catch (err) {
+		throw new ActionError(
+			ErrorCodes.PRECONDITION_REFUSED,
+			`${label} build could not prove the opened asset is empty; no geometry was created. Inventory error: ${describeThrown(err)}`,
+		);
+	}
+	const occupied = inventories.filter(item => item.ids.length > 0);
+	if (!occupied.length) return;
+	const count = occupied.reduce((sum, item) => sum + item.ids.length, 0);
+	const evidence = occupied.map(item => `${item.key}=${item.ids.length}`).join(', ');
+	throw new ActionError(
+		ErrorCodes.PRECONDITION_REFUSED,
+		`${label} build requires an empty target, but the opened asset already contains ${count} primitive(s) (${evidence}); no geometry was created. Create a fresh asset instead of replaying build.`,
+	);
+}
+
 const libraryFootprintBuild: Handler = async (payload) => {
 	const uuid = requireString(payload, 'uuid');
 	const libraryUuid = requireString(payload, 'libraryUuid');
@@ -4645,6 +4684,10 @@ const libraryFootprintBuild: Handler = async (payload) => {
 	try {
 		tabId = await eda.lib_Footprint.openInEditor(uuid, libraryUuid);
 		if (!tabId) throw new ActionError(ErrorCodes.INVALID_STATE, 'EasyEDA did not open the footprint editor.');
+		await requireEmptyLibraryBuildTarget('Footprint', [
+			{ key: 'pads', getAllPrimitiveId: () => eda.pcb_PrimitivePad.getAllPrimitiveId() },
+			{ key: 'polylines', getAllPrimitiveId: () => eda.pcb_PrimitivePolyline.getAllPrimitiveId() },
+		]);
 		for (const p of pads) {
 			const primitive = await eda.pcb_PrimitivePad.create(
 				p.layer as TPCB_LayersOfPad, p.number, p.x, p.y, p.rotation, p.shape,
@@ -4690,7 +4733,12 @@ const libraryFootprintBuild: Handler = async (payload) => {
 				created: { pads: createdPads, lines: createdLines }, rollback,
 				error: describeThrown(err), verified: false,
 			},
-			warnings: ['Footprint build failed after mutation began; inspect rollback and the opened footprint before retrying.'],
+			warnings: [
+				'Footprint build failed after mutation began; inspect rollback and the opened footprint before retrying.',
+				...(rollback.pads && rollback.lines
+					? ['The platform error may be transient; re-read the target inventory and retry only after it is proven empty.']
+					: []),
+			],
 		};
 	}
 };
@@ -4778,6 +4826,11 @@ const librarySymbolBuild: Handler = async (payload) => {
 	try {
 		tabId = await eda.lib_Symbol.openInEditor(uuid, libraryUuid);
 		if (!tabId) throw new ActionError(ErrorCodes.INVALID_STATE, 'EasyEDA did not open the symbol editor.');
+		await requireEmptyLibraryBuildTarget('Symbol', [
+			{ key: 'pins', getAllPrimitiveId: () => eda.sch_PrimitivePin.getAllPrimitiveId() },
+			{ key: 'polygons', getAllPrimitiveId: () => eda.sch_PrimitivePolygon.getAllPrimitiveId() },
+			{ key: 'circles', getAllPrimitiveId: () => eda.sch_PrimitiveCircle.getAllPrimitiveId() },
+		]);
 		const outline = await eda.sch_PrimitivePolygon.create(payload.outline as number[], null, 'none', 1, null);
 		outlineId = primitiveIdOf(outline);
 		if (!outlineId) throw new Error('symbol outline create returned no persistent primitive id');
@@ -4802,6 +4855,7 @@ const librarySymbolBuild: Handler = async (payload) => {
 		return { result: { uuid, libraryUuid, tabId, created: { pins: createdPins, outline: outlineId, circles: createdCircles }, verified } };
 	}
 	catch (err) {
+		if (err instanceof ActionError && createdPins.length + createdCircles.length === 0 && !outlineId) throw err;
 		try { if (createdPins.length) await eda.sch_PrimitivePin.delete(createdPins); } catch { /* report partial */ }
 		try { if (createdCircles.length) await eda.sch_PrimitiveCircle.delete(createdCircles); } catch { /* report partial */ }
 		try { if (outlineId) await eda.sch_PrimitivePolygon.delete(outlineId); } catch { /* report partial */ }
@@ -11452,20 +11506,14 @@ const pcbOutlineGet: Handler = async () => {
 	// line, so the points are the truthful board edge.
 	let points: Array<[number, number]> | null = null;
 	let outlineFormat: string | null = null;
-	if (polylines.length === 1) {
+	if (polylines.length > 0) {
 		try {
-			const src = polylines[0].getState_Polygon()?.getSource();
-			const parsed = polygonSourceToPoints(src as unknown[]);
+			const sources = polylines.map(p => p.getState_Polygon()?.getSource());
+			const parsed = selectBoardOutlineSources(sources);
 			points = parsed.points;
 			outlineFormat = parsed.format;
 		}
 		catch { /* best-effort: callers fall back to the bbox */ }
-	}
-	else if (polylines.length > 1) {
-		// Several polylines on the outline layer = board + cutouts (or a stale
-		// leftover). Which one is the boundary is ambiguous, so don't guess — the
-		// caller degrades to the bbox and says so.
-		outlineFormat = `ambiguous:${polylines.length}-polylines`;
 	}
 
 	// `outline` = the canonical polyline-based board outline; `segments`/`arcs` keep
@@ -11479,38 +11527,91 @@ const pcbOutlineGet: Handler = async () => {
  * The source array is an SVG-path-like flat mix of command tokens and numbers:
  * `[x0, y0, 'L', x1, y1, x2, y2, …]` — a start point followed by commands, where
  * `L` takes an arbitrary run of coordinate pairs (verified on a live ceshi board).
- *
- * Curved commands (`ARC`/`CARC`/`C`/`R`/`CIRCLE`) carry parameter layouts we have
- * not been able to observe on a real board, so rather than guessing an arg count
- * — and silently emitting a mangled polygon — we bail out and report the command
- * that stopped us. A wrong boundary is worse than an admitted approximation: the
- * caller degrades to the AABB and labels it.
+ * `ARC` is `["ARC", signedSweepDegrees, endX, endY]`: the start is the current
+ * point, and the sign selects the sweep direction. This layout and the two-center
+ * disambiguation were verified against 129 live board arcs (#215). Other curved
+ * commands (`CARC`/`C`/`R`/`CIRCLE`) remain fail-closed until real samples prove
+ * their layouts. A wrong boundary is worse than an admitted AABB approximation.
  *
  * Worth noting: `pcb outline-round` does NOT produce arcs. It approximates each
  * rounded corner with a 7-point polyline, so every outline this toolchain creates
  * — rounded ones included — is pure `L` and parses exactly.
  */
-function polygonSourceToPoints(src: unknown): { points: Array<[number, number]> | null; format: string | null } {
+export function polygonSourceToPoints(src: unknown): { points: Array<[number, number]> | null; format: string | null } {
 	if (!Array.isArray(src) || src.length < 6) return { points: null, format: 'empty' };
 	const pts: Array<[number, number]> = [];
 	let i = 0;
-	if (typeof src[0] !== 'number' || typeof src[1] !== 'number') {
+	if (typeof src[0] !== 'number' || !Number.isFinite(src[0]) || typeof src[1] !== 'number' || !Number.isFinite(src[1])) {
 		return { points: null, format: `unexpected-start:${String(src[0])}` };
 	}
-	pts.push([src[0] as number, src[1] as number]);
+	let currentX = src[0] as number;
+	let currentY = src[1] as number;
+	let hasArc = false;
+	pts.push([currentX, currentY]);
 	i = 2;
 	while (i < src.length) {
 		const tok = src[i];
 		if (typeof tok !== 'string') return { points: null, format: `unexpected-token:${String(tok)}` };
-		if (tok !== 'L') return { points: null, format: `unsupported-command:${tok}` };
-		i++;
-		let consumed = 0;
-		while (i + 1 < src.length && typeof src[i] === 'number' && typeof src[i + 1] === 'number') {
-			pts.push([src[i] as number, src[i + 1] as number]);
-			i += 2;
-			consumed++;
+		if (tok === 'L') {
+			i++;
+			let consumed = 0;
+			while (i + 1 < src.length && typeof src[i] === 'number' && Number.isFinite(src[i]) && typeof src[i + 1] === 'number' && Number.isFinite(src[i + 1])) {
+				currentX = src[i] as number;
+				currentY = src[i + 1] as number;
+				pts.push([currentX, currentY]);
+				i += 2;
+				consumed++;
+			}
+			if (consumed === 0) return { points: null, format: 'malformed-L' };
+			continue;
 		}
-		if (consumed === 0) return { points: null, format: 'malformed-L' };
+		if (tok !== 'ARC') return { points: null, format: `unsupported-command:${tok}` };
+		if (i + 3 >= src.length || typeof src[i + 1] !== 'number' || !Number.isFinite(src[i + 1])
+			|| typeof src[i + 2] !== 'number' || !Number.isFinite(src[i + 2])
+			|| typeof src[i + 3] !== 'number' || !Number.isFinite(src[i + 3])) {
+			return { points: null, format: 'malformed-ARC' };
+		}
+
+		const sweepDegrees = src[i + 1] as number;
+		const endX = src[i + 2] as number;
+		const endY = src[i + 3] as number;
+		const absSweep = Math.abs(sweepDegrees);
+		const chordX = endX - currentX;
+		const chordY = endY - currentY;
+		const chord = Math.hypot(chordX, chordY);
+		const sineHalf = Math.sin(absSweep * Math.PI / 360);
+		if (absSweep <= 0 || absSweep >= 360 || chord <= 1e-12 || sineHalf <= 1e-12) {
+			return { points: null, format: 'malformed-ARC' };
+		}
+		const radius = chord / (2 * sineHalf);
+		const midX = (currentX + endX) / 2;
+		const midY = (currentY + endY) / 2;
+		const centerOffset = Math.sqrt(Math.max(0, radius * radius - chord * chord / 4));
+		const normalX = -chordY / chord;
+		const normalY = chordX / chord;
+		let best: { mismatch: number; centerX: number; centerY: number } | null = null;
+		for (const sign of [1, -1]) {
+			const centerX = midX + sign * centerOffset * normalX;
+			const centerY = midY + sign * centerOffset * normalY;
+			const startAngle = Math.atan2(currentY - centerY, currentX - centerX) * 180 / Math.PI;
+			const endAngle = Math.atan2(endY - centerY, endX - centerX) * 180 / Math.PI;
+			const directed = ((sweepDegrees >= 0 ? endAngle - startAngle : startAngle - endAngle) % 360 + 360) % 360;
+			const mismatch = Math.abs(directed - absSweep);
+			if (!best || mismatch < best.mismatch) best = { mismatch, centerX, centerY };
+		}
+		if (!best || best.mismatch >= 0.5) return { points: null, format: 'arc-sweep-mismatch' };
+
+		const startRadians = Math.atan2(currentY - best.centerY, currentX - best.centerX);
+		const steps = Math.max(2, Math.ceil(absSweep / 2)); // <=2° per chord, <0.01mm sagitta at the reported radii
+		for (let step = 1; step < steps; step++) {
+			const angle = startRadians + sweepDegrees * Math.PI / 180 * step / steps;
+			pts.push([best.centerX + radius * Math.cos(angle), best.centerY + radius * Math.sin(angle)]);
+		}
+		pts.push([endX, endY]);
+		currentX = endX;
+		currentY = endY;
+		hasArc = true;
+		i += 4;
 	}
 	// A closed ring repeats its first point last; drop the duplicate so consumers
 	// can treat the list as a plain ring without special-casing it.
@@ -11520,7 +11621,77 @@ function polygonSourceToPoints(src: unknown): { points: Array<[number, number]> 
 		if (Math.abs(fx - lx) < 1e-6 && Math.abs(fy - ly) < 1e-6) pts.pop();
 	}
 	if (pts.length < 3) return { points: null, format: 'degenerate' };
-	return { points: pts, format: 'polyline' };
+	return { points: pts, format: hasArc ? 'arc-polyline' : 'polyline' };
+}
+
+function polygonArea(points: Array<[number, number]>): number {
+	let twice = 0;
+	for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+		twice += points[j][0] * points[i][1] - points[i][0] * points[j][1];
+	}
+	return Math.abs(twice) / 2;
+}
+
+function pointOnRing(x: number, y: number, ring: Array<[number, number]>): boolean {
+	for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+		const ax = ring[j][0], ay = ring[j][1], bx = ring[i][0], by = ring[i][1];
+		const dx = bx - ax, dy = by - ay;
+		const length2 = dx * dx + dy * dy;
+		const t = length2 <= 1e-18 ? 0 : Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / length2));
+		if (Math.hypot(x - (ax + t * dx), y - (ay + t * dy)) <= 1e-6) return true;
+	}
+	return false;
+}
+
+function segmentCrossesRing(a: [number, number], b: [number, number], ring: Array<[number, number]>): boolean {
+	const cross = (p: [number, number], q: [number, number], r: [number, number]) =>
+		(q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+	const onSegment = (p: [number, number], q: [number, number], r: [number, number]) =>
+		Math.abs(cross(p, q, r)) <= 1e-9
+		&& r[0] >= Math.min(p[0], q[0]) - 1e-9 && r[0] <= Math.max(p[0], q[0]) + 1e-9
+		&& r[1] >= Math.min(p[1], q[1]) - 1e-9 && r[1] <= Math.max(p[1], q[1]) + 1e-9;
+	for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+		const c = ring[j], d = ring[i];
+		const abC = cross(a, b, c), abD = cross(a, b, d);
+		const cdA = cross(c, d, a), cdB = cross(c, d, b);
+		if (((abC > 1e-9 && abD < -1e-9) || (abC < -1e-9 && abD > 1e-9))
+			&& ((cdA > 1e-9 && cdB < -1e-9) || (cdA < -1e-9 && cdB > 1e-9))) return true;
+		if (onSegment(a, b, c) || onSegment(a, b, d) || onSegment(c, d, a) || onSegment(c, d, b)) return true;
+	}
+	return false;
+}
+
+function ringStrictlyInside(candidate: Array<[number, number]>, outer: Array<[number, number]>): boolean {
+	if (!candidate.every(([x, y]) => pointInPolygon(x, y, outer) && !pointOnRing(x, y, outer))) return false;
+	for (let i = 0, j = candidate.length - 1; i < candidate.length; j = i++) {
+		if (segmentCrossesRing(candidate[j], candidate[i], outer)) return false;
+	}
+	return true;
+}
+
+/** Select a proven outer ring from one or more outline-layer polygon sources. */
+export function selectBoardOutlineSources(sources: unknown[]): { points: Array<[number, number]> | null; format: string | null } {
+	if (!Array.isArray(sources) || sources.length === 0) return { points: null, format: 'empty' };
+	const parsed = sources.map(polygonSourceToPoints);
+	const failed = parsed.find(result => !result.points);
+	if (failed) {
+		return { points: null, format: sources.length === 1 ? failed.format : `ambiguous:${sources.length}-polylines:${failed.format}` };
+	}
+	if (parsed.length === 1) return parsed[0];
+
+	const ranked = parsed.map((result, index) => ({ ...result, index, area: polygonArea(result.points!) }))
+		.sort((a, b) => b.area - a.area);
+	if (ranked[0].area <= 1e-9 || Math.abs(ranked[0].area - ranked[1].area) <= 1e-9) {
+		return { points: null, format: `ambiguous:${sources.length}-polylines` };
+	}
+	const outer = ranked[0].points!;
+	// Vertex-only containment is insufficient for a concave outline: two inner
+	// vertices can be legal while their connecting segment cuts across a notch.
+	// Require every vertex strictly inside and every candidate edge disjoint from
+	// the outer boundary before claiming a proven containing ring.
+	const containsEveryOtherRing = ranked.slice(1).every(candidate => ringStrictlyInside(candidate.points!, outer));
+	if (!containsEveryOtherRing) return { points: null, format: `ambiguous:${sources.length}-polylines` };
+	return { points: outer, format: `${ranked[0].format};outer-of:${sources.length}` };
 }
 
 /** Remove the current board outline (all primitives on the BOARD_OUTLINE layer). */

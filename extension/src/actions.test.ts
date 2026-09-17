@@ -22,12 +22,100 @@ import {
 	isPowerRailNet,
 	normalizeDeviceRef,
 	planOtherPropertyBackfill,
+	polygonSourceToPoints,
 	PROJECTED_STATE_KEYS,
 	runAction,
 	schematicComponentsList,
+	selectBoardOutlineSources,
 	serializeComponent,
 	summarizeActivePageConnectivity,
 } from './actions';
+
+// ─── Board-outline ARC decoding (#215) ─────────────────────────────────
+
+test('polygonSourceToPoints decodes signed ARC sweeps without taking the long way', () => {
+	const lower = polygonSourceToPoints([-10, 0, 'ARC', 180, 10, 0, 'L', -10, 0]);
+	assert.equal(lower.format, 'arc-polyline');
+	assert.ok(lower.points && lower.points.length > 80);
+	const lowerXs = lower.points!.map(([x]) => x);
+	const lowerYs = lower.points!.map(([, y]) => y);
+	assert.ok(Math.min(...lowerXs) >= -10 - 1e-9 && Math.max(...lowerXs) <= 10 + 1e-9, 'wrong center made the arc overshoot its diameter');
+	assert.ok(Math.abs(Math.min(...lowerYs) + 10) < 1e-9 && Math.max(...lowerYs) <= 1e-9, 'positive 180° sweep should take the lower semicircle');
+
+	const upper = polygonSourceToPoints([-10, 0, 'ARC', -180, 10, 0, 'L', -10, 0]);
+	const upperYs = upper.points!.map(([, y]) => y);
+	assert.ok(Math.abs(Math.max(...upperYs) - 10) < 1e-9 && Math.min(...upperYs) >= -1e-9, 'negative sweep must choose the opposite center/direction');
+});
+
+test('polygonSourceToPoints keeps unverified curve commands fail-closed', () => {
+	const result = polygonSourceToPoints([0, 0, 'CARC', 90, 10, 10]);
+	assert.equal(result.points, null);
+	assert.equal(result.format, 'unsupported-command:CARC');
+});
+
+test('polygonSourceToPoints reconstructs a 129-ARC large circle within 0.01mm', () => {
+	const radius = 1291;
+	const arcCount = 129;
+	const sweep = 360 / arcCount;
+	const source: Array<string | number> = [radius, 0];
+	for (let i = 1; i <= arcCount; i++) {
+		const angle = 2 * Math.PI * i / arcCount;
+		source.push('ARC', sweep, i === arcCount ? radius : radius * Math.cos(angle), i === arcCount ? 0 : radius * Math.sin(angle));
+	}
+	const result = polygonSourceToPoints(source);
+	assert.equal(result.format, 'arc-polyline');
+	assert.ok(result.points);
+	const xs = result.points!.map(([x]) => x);
+	const ys = result.points!.map(([, y]) => y);
+	const diameterX = Math.max(...xs) - Math.min(...xs);
+	const diameterY = Math.max(...ys) - Math.min(...ys);
+	const maxErrorMil = 0.01 / 0.0254;
+	assert.ok(Math.abs(diameterX - 2 * radius) < maxErrorMil, `x diameter error ${diameterX - 2 * radius}mil`);
+	assert.ok(Math.abs(diameterY - 2 * radius) < maxErrorMil, `y diameter error ${diameterY - 2 * radius}mil`);
+});
+
+test('selectBoardOutlineSources chooses one containing outer ring and rejects disjoint rings', () => {
+	const outer = [-20, 0, 'ARC', 180, 20, 0, 'ARC', 180, -20, 0];
+	const inner = [-5, -5, 'L', 5, -5, 5, 5, -5, 5, -5, -5];
+	const selected = selectBoardOutlineSources([inner, outer]);
+	assert.ok(selected.points && selected.points.length > 100, JSON.stringify({ format: selected.format, points: selected.points?.length }));
+	assert.equal(selected.format, 'arc-polyline;outer-of:2');
+
+	const disjoint = [30, 30, 'L', 35, 30, 35, 35, 30, 35, 30, 30];
+	assert.deepEqual(selectBoardOutlineSources([outer, disjoint]), {
+		points: null,
+		format: 'ambiguous:2-polylines',
+	});
+
+	const concaveOuter = [0, 0, 'L', 10, 0, 10, 10, 7, 10, 7, 3, 3, 3, 3, 10, 0, 10, 0, 0];
+	const crossesNotch = [2, 8, 'L', 8, 8, 5, 1, 2, 8];
+	assert.deepEqual(selectBoardOutlineSources([concaveOuter, crossesNotch]), {
+		points: null,
+		format: 'ambiguous:2-polylines',
+	}, 'vertices inside a concave ring do not prove the candidate edges are contained');
+});
+
+test('pcb.outline.get returns the sampled containing ring instead of degrading every multi-polyline outline', async () => {
+	const outer = [-20, 0, 'ARC', 180, 20, 0, 'ARC', 180, -20, 0];
+	const inner = [-5, -5, 'L', 5, -5, 5, 5, -5, 5, -5, -5];
+	const primitive = (id: string, source: Array<string | number>) => ({
+		getState_PrimitiveId: () => id,
+		getState_Polygon: () => ({ getSource: () => source }),
+	});
+	(globalThis as any).eda = {
+		pcb_PrimitivePolyline: { getAll: async () => [primitive('inner', inner), primitive('outer', outer)] },
+		pcb_PrimitiveLine: { getAll: async () => [] },
+		pcb_PrimitiveArc: { getAll: async () => [] },
+		pcb_Primitive: { getPrimitivesBBox: async () => ({ minX: -21, maxX: 21, minY: -21, maxY: 21 }) },
+	};
+	try {
+		const res: any = await runAction('pcb.outline.get', {});
+		assert.equal(res.result.outline, 2);
+		assert.equal(res.result.outlineFormat, 'arc-polyline;outer-of:2');
+		assert.ok(res.result.points.length > 100);
+	}
+	finally { delete (globalThis as any).eda; }
+});
 
 // ─── document.open: keep navigation on a known editor split ──────────────
 
@@ -204,6 +292,7 @@ test('library footprint build opens the asset, creates pads/lines and verifies I
 	(globalThis as any).eda = {
 		lib_Footprint: { openInEditor: async () => 'TAB-FP' },
 		pcb_PrimitivePad: {
+			getAllPrimitiveId: async () => [],
 			create: async (_layer: number, number: string) => {
 				const id = `pad-${number}`; padIds.push(id);
 				return { getState_PrimitiveId: () => id };
@@ -215,6 +304,7 @@ test('library footprint build opens the asset, creates pads/lines and verifies I
 			createPolygon: (source: unknown) => ({ source }),
 		},
 		pcb_PrimitivePolyline: {
+			getAllPrimitiveId: async () => [],
 			create: async () => {
 				const id = `line-${lineIds.length + 1}`; lineIds.push(id);
 				return { getState_PrimitiveId: () => id };
@@ -237,6 +327,114 @@ test('library footprint build opens the asset, creates pads/lines and verifies I
 		assert.deepEqual(res.result.created.lines, ['line-1']);
 		assert.equal(res.result.tabId, 'TAB-FP');
 		assert.equal(res.result.verified, true);
+	}
+	finally { delete (globalThis as any).eda; }
+});
+
+test('library footprint build refuses a replay before creating duplicate geometry', async () => {
+	const padIds: string[] = [];
+	const lineIds: string[] = [];
+	let saves = 0;
+	(globalThis as any).eda = {
+		lib_Footprint: { openInEditor: async () => 'TAB-FP' },
+		pcb_PrimitivePad: {
+			getAllPrimitiveId: async () => [...padIds],
+			create: async (_layer: number, number: string) => {
+				const id = `pad-${number}-${padIds.length + 1}`; padIds.push(id);
+				return { getState_PrimitiveId: () => id };
+			},
+			get: async (ids: string[]) => ids.map(id => ({ id })),
+			delete: async () => true,
+		},
+		pcb_MathPolygon: { createPolygon: (source: unknown) => ({ source }) },
+		pcb_PrimitivePolyline: {
+			getAllPrimitiveId: async () => [...lineIds],
+			create: async () => {
+				const id = `line-${lineIds.length + 1}`; lineIds.push(id);
+				return { getState_PrimitiveId: () => id };
+			},
+			get: async (ids: string[]) => ids.map(id => ({ id })),
+			delete: async () => true,
+		},
+		pcb_Document: { save: async () => { saves++; return true; } },
+	};
+	const payload = {
+		uuid: 'FP-1', libraryUuid: 'LIB-F',
+		pads: [{ number: '1', layer: 1, x: 0, y: 0, shape: ['RECT', 40, 40, 0] }],
+		lines: [{ layer: 3, startX: -20, startY: 20, endX: 20, endY: 20, width: 6 }],
+	};
+	try {
+		await runAction('library.footprint.build', payload);
+		await assert.rejects(
+			() => runAction('library.footprint.build', payload),
+			(err: any) => err.code === 'PRECONDITION_REFUSED' && /requires an empty target/.test(err.message),
+		);
+		assert.deepEqual(padIds, ['pad-1-1']);
+		assert.deepEqual(lineIds, ['line-1']);
+		assert.equal(saves, 1, 'refused replay must not save or create anything');
+	}
+	finally { delete (globalThis as any).eda; }
+});
+
+test('library symbol build refuses a non-empty target with zero new primitives', async () => {
+	let creates = 0;
+	let saves = 0;
+	(globalThis as any).eda = {
+		lib_Symbol: { openInEditor: async () => 'TAB-SYM' },
+		sch_PrimitivePin: {
+			getAllPrimitiveId: async () => ['pin-existing'],
+			create: async () => { creates++; return { getState_PrimitiveId: () => 'pin-new' }; },
+			delete: async () => true,
+		},
+		sch_PrimitivePolygon: {
+			getAllPrimitiveId: async () => [],
+			create: async () => { creates++; return { getState_PrimitiveId: () => 'outline-new' }; },
+			delete: async () => true,
+		},
+		sch_PrimitiveCircle: {
+			getAllPrimitiveId: async () => [],
+			create: async () => { creates++; return { getState_PrimitiveId: () => 'circle-new' }; },
+			delete: async () => true,
+		},
+		sch_Document: { save: async () => { saves++; return true; } },
+	};
+	try {
+		await assert.rejects(
+			() => runAction('library.symbol.build', {
+				uuid: 'SYM-1', libraryUuid: 'LIB-S',
+				outline: [-20, -20, 20, -20, 20, 20, -20, 20],
+				pins: [{ number: '1', name: 'IN', x: -40, y: 0 }],
+			}),
+			(err: any) => err.code === 'PRECONDITION_REFUSED' && /pins=1/.test(err.message),
+		);
+		assert.equal(creates, 0);
+		assert.equal(saves, 0);
+	}
+	finally { delete (globalThis as any).eda; }
+});
+
+test('library footprint build fails closed when target inventory cannot be read', async () => {
+	let creates = 0;
+	(globalThis as any).eda = {
+		lib_Footprint: { openInEditor: async () => 'TAB-FP' },
+		pcb_PrimitivePad: {
+			getAllPrimitiveId: async () => { throw new Error('inventory unavailable'); },
+			create: async () => { creates++; return { getState_PrimitiveId: () => 'pad-new' }; },
+		},
+		pcb_PrimitivePolyline: {
+			getAllPrimitiveId: async () => [],
+			create: async () => { creates++; return { getState_PrimitiveId: () => 'line-new' }; },
+		},
+	};
+	try {
+		await assert.rejects(
+			() => runAction('library.footprint.build', {
+				uuid: 'FP-1', libraryUuid: 'LIB-F',
+				pads: [{ number: '1', layer: 1, x: 0, y: 0, shape: ['RECT', 40, 40, 0] }],
+			}),
+			(err: any) => err.code === 'PRECONDITION_REFUSED' && /could not prove/.test(err.message),
+		);
+		assert.equal(creates, 0);
 	}
 	finally { delete (globalThis as any).eda; }
 });

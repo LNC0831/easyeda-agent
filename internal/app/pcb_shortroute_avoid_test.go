@@ -128,7 +128,7 @@ func TestPlanShortRoutes_NoCrossingsEmitted(t *testing.T) {
 	for i, v := range vias {
 		pv = append(pv, pcbViaP{ID: fmt.Sprintf("v%d", i), Net: v.Net, X: v.X, Y: v.Y, Dia: opt.viaDia})
 	}
-	if viol := findClearanceViolations(tracks, nil, pv, nil, opt.clearance); len(viol) > 0 {
+	if viol := findClearanceViolations(tracks, nil, pv, nil, opt.clearance, opt.clearance); len(viol) > 0 {
 		t.Fatalf("planner output violates its own check: %+v", viol)
 	}
 	if len(segs) == 0 {

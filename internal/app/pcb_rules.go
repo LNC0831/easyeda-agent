@@ -13,14 +13,15 @@ const mmToMil = 39.37007874
 
 // pcbRules is the normalized rule set (all values in mil) the planners consume.
 type pcbRules struct {
-	clearanceMil     float64 // track↔pad safe spacing (the binding routing clearance)
-	trackWidthMil    float64 // default routing track width — used for SIGNAL nets
-	powerWidthMil    float64 // design width for POWER/GND nets (wider, for current)
-	trackWidthMinMil float64 // minimum legal track width (clamp floor)
-	viaDrillMil      float64 // via hole diameter
-	viaDiameterMil   float64 // via outer diameter
-	copperToEdgeMil  float64 // copper/plane-zone → board-outline clearance (pour inset floor)
-	source           string  // "live" | "fallback"
+	clearanceMil           float64 // track↔pad/via safe spacing (the binding routing clearance)
+	clearanceTrackTrackMil float64 // track↔track safe spacing; must retain the matrix's object-pair dimension
+	trackWidthMil          float64 // default routing track width — used for SIGNAL nets
+	powerWidthMil          float64 // design width for POWER/GND nets (wider, for current)
+	trackWidthMinMil       float64 // minimum legal track width (clamp floor)
+	viaDrillMil            float64 // via hole diameter
+	viaDiameterMil         float64 // via outer diameter
+	copperToEdgeMil        float64 // copper/plane-zone → board-outline clearance (pour inset floor)
+	source                 string  // "live" | "fallback"
 }
 
 // defaultPcbRules is the daemon's fallback baseline — a sane seed when the live
@@ -34,7 +35,8 @@ type pcbRules struct {
 // manufacturing rule.
 func defaultPcbRules() pcbRules {
 	return pcbRules{
-		clearanceMil: 6, trackWidthMil: 10, powerWidthMil: 20, trackWidthMinMil: 5,
+		clearanceMil: 6, clearanceTrackTrackMil: 4,
+		trackWidthMil: 10, powerWidthMil: 20, trackWidthMinMil: 5,
 		viaDrillMil: 12, viaDiameterMil: 24, copperToEdgeMil: 10, source: "fallback",
 	}
 }
@@ -163,27 +165,34 @@ func parsePcbRules(result map[string]any) pcbRules {
 	}
 
 	// Clearance — from the Safe Spacing triangular matrix (row/col = object types:
-	// Track, SMD Pad, TH Pad, …). Use the BINDING routing clearance = the max of
-	// Track↔Track (content[0][0]) and Track↔SMD-Pad (content[1][0]); DRC checks
-	// tracks against OTHER nets' pads at the pad value (6mil on ceshi), which is the
-	// constraint that actually bites when routing near parts — not the smaller
-	// track-track value (4mil).
+	// Track, SMD Pad, TH Pad, …). Preserve the pair dimension: live JLCEDA rules
+	// commonly use 4mil for Track↔Track and 6mil for Track↔SMD-Pad. Routing uses
+	// the binding pad value, but `pcb check` must not apply it to Track↔Track.
 	if content, ok := mnav(cfg, "Spacing", "Safe Spacing", "copperThickness1oz", "tables", "1", "content").([]any); ok && len(content) > 0 {
-		var clr float64
+		var trackTrack, trackPad float64
 		if row0, ok := content[0].([]any); ok && len(row0) > 0 {
-			if v, ok := asFloatOK(row0[0]); ok && v > clr {
-				clr = v
+			if v, ok := asFloatOK(row0[0]); ok && v > 0 {
+				trackTrack = v
 			}
 		}
 		if len(content) > 1 {
 			if row1, ok := content[1].([]any); ok && len(row1) > 0 {
-				if v, ok := asFloatOK(row1[0]); ok && v > clr {
-					clr = v // Track↔SMD-Pad
+				if v, ok := asFloatOK(row1[0]); ok && v > 0 {
+					trackPad = v
 				}
 			}
 		}
-		if clr > 0 {
-			r.clearanceMil = round2(clr * mmToMil)
+		if trackTrack > 0 {
+			r.clearanceTrackTrackMil = round2(trackTrack * mmToMil)
+			got = true
+		}
+		if trackPad > 0 {
+			r.clearanceMil = round2(trackPad * mmToMil)
+			got = true
+		} else if trackTrack > 0 {
+			// Older/smaller matrices may expose only Track↔Track. Keep consumers
+			// usable without inventing a less conservative pad rule.
+			r.clearanceMil = r.clearanceTrackTrackMil
 			got = true
 		}
 	}

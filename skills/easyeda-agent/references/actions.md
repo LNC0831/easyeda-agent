@@ -110,10 +110,15 @@ Playbook 使用 `version:1`、`meta` 和有序 `steps`。每步只选一种执�
 PDF 通读、封装变体消歧和规格格式见 [library-authoring.md](library-authoring.md)。
 资产使用可复用的 `EA_AGENT__<ASSET>` 命名，项目来源写属性或描述。create/build 的
 `verified/partial/rollback` 必须核对；删除要求 UUID、library 和 expected-name 精确匹配。
+Symbol/Footprint build 仅允许写入可证明为空的刚创建资产：Connector 在任何 create 前回读
+目标 editor 的完整受支持图元 inventory，非空或读取不完整都以 `PRECONDITION_REFUSED`
+零写入拒绝。build 不是追加或替换接口，不要重放同一 UUID；当前没有 `--replace`。
 
 - Footprint JSON 的单位是 mil，pad/hole 使用官方 tuple；复杂弧线/区域优先用
   `lib footprint copy` 保留几何。层与制造规则见 [pcb.md](pcb.md)。
 - `lib symbol build` 从轮廓、引脚与可选圆形生成符号；引脚编号、Pin-1 和极性需验证。
+- 当前没有 Device rename typed action；实测官方 `lib_Device.modify` 改名返回 false 且不落地，
+  不要用 `debug exec` 反复试探。需要新名称时新建并重新绑定 Device。
 - `lib model3d search/copy/create` 获取模型；`lib device model3d` 绑定或清除，须回读
   模型 UUID 与 library UUID。`device create` 也支持模型绑定参数。
 - 库 API 有 beta 能力；错误或结果不明时先 get，不能因即时读回缺失重复创建。

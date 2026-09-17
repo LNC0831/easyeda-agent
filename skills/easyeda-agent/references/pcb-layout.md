@@ -230,7 +230,8 @@ per-run and audited — nothing is confirmed by a force.
 - `pcb.outline.get` — current outline (segment/arc count + bbox + **真多边形 `points`/`outlineFormat`**,#167)。
   `points` 是板框折线**中心线**点集 = 铣刀走的真板边;`bbox` 是**渲染范围含线宽**(实测 10mil 线宽每边大 5mil)。
   异形板(Type-C 凸出/缺口/铣槽)上「到板边距离」必须用 `points`——AABB 会把贴着凸出部真边的件误判成离边很远。
-  单条闭合折线才解析;多条/含弧退化为 bbox 并标 `degraded`(消费方 layout-score edge-io/internal-on-edge 自动回落)。
+  已实测的 `ARC,signedAngle,endX,endY` 按 ≤2° 采样;多条可解析闭环仅在唯一最大环包含其他全部环时选为外边。
+  `CARC/C/R/CIRCLE`、并列外环、等面积环或无法证明包含关系时仍 fail closed，退化为 bbox 并标 `degraded`。
 - `pcb.outline.clear` — remove the outline.
 
 **The agent generates the `points`** for the wanted shape. Curves are **line-segment

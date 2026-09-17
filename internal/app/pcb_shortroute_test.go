@@ -260,7 +260,7 @@ func padViolations(board []apComp, segs []rtSeg, vias []rtVia, clearance, viaDia
 		pvias = append(pvias, pcbViaP{ID: fmt.Sprintf("v%d", i), Net: v.Net, X: v.X, Y: v.Y, Dia: viaDia})
 	}
 	var out []pcbCheckFinding
-	for _, f := range findClearanceViolations(tracks, pads, pvias, nil, clearance) {
+	for _, f := range findClearanceViolations(tracks, pads, pvias, nil, clearance, clearance) {
 		if f.Designator != "" { // pad-related (track↔pad / via↔pad)
 			out = append(out, f)
 		}

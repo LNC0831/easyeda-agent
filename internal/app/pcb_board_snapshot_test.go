@@ -269,3 +269,14 @@ func TestBoardRules_FallbackWhenAbsent(t *testing.T) {
 		t.Errorf("nil rules must degrade to the JLCPCB baseline, got %+v", got)
 	}
 }
+
+func TestBoardRules_OldSnapshotKeepsSingleClearanceSemantics(t *testing.T) {
+	old := (&boardRules{ClearanceMil: 6, TrackWidthMil: 10, Source: "live"}).toPcbRules()
+	if old.clearanceTrackTrackMil != 6 {
+		t.Fatalf("old snapshot without pair-specific spacing must retain its recorded 6mil scalar, got %+v", old)
+	}
+	current := rulesToBoard(defaultPcbRules()).toPcbRules()
+	if current.clearanceTrackTrackMil != 4 || current.clearanceMil != 6 {
+		t.Fatalf("new snapshot lost pair-specific spacing: %+v", current)
+	}
+}

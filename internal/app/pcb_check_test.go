@@ -557,7 +557,7 @@ func TestFindClearanceViolations(t *testing.T) {
 }
 
 func findClearanceViolationsReport(tracks []pcbTrack, pads []pcbPadP, vias []pcbViaP, clr float64) pcbCheckReport {
-	return pcbCheckReport{Findings: findClearanceViolations(tracks, pads, vias, nil, clr)}
+	return pcbCheckReport{Findings: findClearanceViolations(tracks, pads, vias, nil, clr, clr)}
 }
 
 // Slot (board cutout) + via↔pad clearance — the classes native DRC reports as
@@ -567,17 +567,17 @@ func TestFindClearanceViolations_SlotAndVia(t *testing.T) {
 	// Vertical track at x=90, width 10 → copper edge reaches x=95, slot edge at
 	// x=100 → 5mil gap < 8mil cutout rule → flagged.
 	tr := []pcbTrack{{ID: "t", Net: "+5V", Layer: 2, X1: 90, Y1: 0, X2: 90, Y2: 300, Width: 10}}
-	if got := countType(pcbCheckReport{Findings: findClearanceViolations(tr, nil, nil, slot, 6)}, "clearance"); got != 1 {
+	if got := countType(pcbCheckReport{Findings: findClearanceViolations(tr, nil, nil, slot, 6, 6)}, "clearance"); got != 1 {
 		t.Fatalf("track 5mil from slot: clearance = %d, want 1", got)
 	}
 	// Via at x=90 (radius 12 → edge x=102, inside the slot band) → flagged.
 	v := []pcbViaP{{ID: "v", Net: "+5V", X: 90, Y: 150, Dia: 24}}
-	if got := countType(pcbCheckReport{Findings: findClearanceViolations(nil, nil, v, slot, 6)}, "clearance"); got != 1 {
+	if got := countType(pcbCheckReport{Findings: findClearanceViolations(nil, nil, v, slot, 6, 6)}, "clearance"); got != 1 {
 		t.Fatalf("via near slot: clearance = %d, want 1", got)
 	}
 	// Track comfortably away (copper edge gap 25mil ≥ 8) → clean.
 	far := []pcbTrack{{ID: "t2", Net: "+5V", Layer: 2, X1: 70, Y1: 0, X2: 70, Y2: 300, Width: 10}}
-	if got := countType(pcbCheckReport{Findings: findClearanceViolations(far, nil, nil, slot, 6)}, "clearance"); got != 1 {
+	if got := countType(pcbCheckReport{Findings: findClearanceViolations(far, nil, nil, slot, 6, 6)}, "clearance"); got != 1 {
 		// edge gap = 100-70-5 = 25 ≥ 8 → 0 findings expected; keep explicit check
 		if got != 0 {
 			t.Errorf("far track findings = %d, want 0", got)
@@ -587,7 +587,7 @@ func TestFindClearanceViolations_SlotAndVia(t *testing.T) {
 	// padHalf 12 → 1mil < 6 → flagged.
 	pad := []pcbPadP{{Designator: "J1", Number: "A7", Net: "USB_DN", Layer: 1, X: 0, Y: 0}}
 	nearVia := []pcbViaP{{ID: "v2", Net: "+5V", X: 25, Y: 0, Dia: 24}}
-	if got := countType(pcbCheckReport{Findings: findClearanceViolations(nil, pad, nearVia, nil, 6)}, "clearance"); got != 1 {
+	if got := countType(pcbCheckReport{Findings: findClearanceViolations(nil, pad, nearVia, nil, 6, 6)}, "clearance"); got != 1 {
 		t.Fatalf("via near other-net pad: clearance = %d, want 1", got)
 	}
 }
@@ -600,7 +600,7 @@ func TestFindClearance_EdgeDistanceSemantics(t *testing.T) {
 	// track↔via: 10mil track, 24mil via (r=12). Centerline 16.9 → edge 16.9-12-5 = -0.1 → violation.
 	tracks := []pcbTrack{{ID: "t1", Net: "A", Layer: 1, X1: 0, Y1: 16.9, X2: 200, Y2: 16.9, Width: 10}}
 	vias := []pcbViaP{{ID: "v1", Net: "B", X: 100, Y: 0, Hole: 12, Dia: 24}}
-	out := findClearanceViolations(tracks, nil, vias, nil, 6)
+	out := findClearanceViolations(tracks, nil, vias, nil, 6, 6)
 	if len(out) != 1 {
 		t.Fatalf("track 16.9mil (centerline) from a 24mil via = edge -0.1mil, want 1 violation, got %d", len(out))
 	}
@@ -610,7 +610,7 @@ func TestFindClearance_EdgeDistanceSemantics(t *testing.T) {
 	// Same via, track pulled far enough that the EDGE gap clears 6mil:
 	// need centerD >= 6 + 12 + 5 = 23.
 	farTracks := []pcbTrack{{ID: "t2", Net: "A", Layer: 1, X1: 0, Y1: 23.5, X2: 200, Y2: 23.5, Width: 10}}
-	if out := findClearanceViolations(farTracks, nil, vias, nil, 6); len(out) != 0 {
+	if out := findClearanceViolations(farTracks, nil, vias, nil, 6, 6); len(out) != 0 {
 		t.Errorf("edge gap 6.5mil clears the 6mil rule, got %d violation(s): %+v", len(out), out)
 	}
 	// track↔track: two 10mil tracks 8mil apart on centerlines OVERLAP (edge -2).
@@ -618,7 +618,7 @@ func TestFindClearance_EdgeDistanceSemantics(t *testing.T) {
 		{ID: "a", Net: "A", Layer: 1, X1: 0, Y1: 0, X2: 200, Y2: 0, Width: 10},
 		{ID: "b", Net: "B", Layer: 1, X1: 0, Y1: 8, X2: 200, Y2: 8, Width: 10},
 	}
-	if out := findClearanceViolations(pair, nil, nil, nil, 6); len(out) != 1 {
+	if out := findClearanceViolations(pair, nil, nil, nil, 6, 6); len(out) != 1 {
 		t.Fatalf("two 10mil tracks 8mil apart on centerlines overlap — want 1 violation, got %d", len(out))
 	}
 	// Centerline 16.5 → edge 6.5 → clears.
@@ -626,8 +626,33 @@ func TestFindClearance_EdgeDistanceSemantics(t *testing.T) {
 		{ID: "a", Net: "A", Layer: 1, X1: 0, Y1: 0, X2: 200, Y2: 0, Width: 10},
 		{ID: "b", Net: "B", Layer: 1, X1: 0, Y1: 16.5, X2: 200, Y2: 16.5, Width: 10},
 	}
-	if out := findClearanceViolations(okPair, nil, nil, nil, 6); len(out) != 0 {
+	if out := findClearanceViolations(okPair, nil, nil, nil, 6, 6); len(out) != 0 {
 		t.Errorf("edge gap 6.5mil clears, got %d: %+v", len(out), out)
+	}
+}
+
+// #218: Safe Spacing is an object-pair matrix. A board may legally use 4mil
+// Track↔Track while retaining 6mil for Track↔Pad/Via. Do not collapse the
+// matrix to the larger scalar and false-flag a native-DRC-clean track pair.
+func TestFindClearance_UsesPairSpecificTrackRule(t *testing.T) {
+	track := pcbTrack{ID: "a", Net: "A", Layer: 1, X1: 0, Y1: 0, X2: 200, Y2: 0, Width: 10}
+	pair := []pcbTrack{
+		track,
+		{ID: "b", Net: "B", Layer: 1, X1: 0, Y1: 15, X2: 200, Y2: 15, Width: 10},
+	}
+	// Centerlines are 15mil apart and both tracks are 10mil wide: copper-edge
+	// gap is 5mil. That clears the 4mil Track↔Track rule even though it is below
+	// the independent 6mil Track↔Pad rule.
+	if out := findClearanceViolations(pair, nil, nil, nil, 6, 4); len(out) != 0 {
+		t.Fatalf("5mil track-to-track gap should clear its 4mil rule, got %+v", out)
+	}
+
+	// Keep proving that the larger object-pair rule was not weakened globally:
+	// the track centerline is 5mil from the edge of this other-net pad.
+	pad := []pcbPadP{{Designator: "R1", Number: "1", Net: "B", Layer: 1, X: 100, Y: 10, W: 10, H: 10}}
+	out := findClearanceViolations([]pcbTrack{track}, pad, nil, nil, 6, 4)
+	if len(out) != 1 || !strings.Contains(out[0].Message, "6mil spacing rule") {
+		t.Fatalf("5mil track-to-pad gap must still fail its 6mil rule, got %+v", out)
 	}
 }
 
@@ -641,7 +666,7 @@ func TestFindClearance_CrossingTracksAreReported(t *testing.T) {
 		{ID: "a", Net: "SPIHD", Layer: 1, X1: 700, Y1: 407.4, X2: 900, Y2: 407.4, Width: 10},
 		{ID: "b", Net: "SPIWP", Layer: 1, X1: 815.4, Y1: 380.7, X2: 815.4, Y2: 423.1, Width: 10},
 	}
-	out := findClearanceViolations(crossing, nil, nil, nil, 6)
+	out := findClearanceViolations(crossing, nil, nil, nil, 6, 6)
 	if len(out) != 1 {
 		t.Fatalf("crossing tracks (dead short) must report, got %d violation(s)", len(out))
 	}
@@ -653,7 +678,7 @@ func TestFindClearance_CrossingTracksAreReported(t *testing.T) {
 		{ID: "a", Net: "N", Layer: 1, X1: 700, Y1: 400, X2: 900, Y2: 400, Width: 10},
 		{ID: "b", Net: "N", Layer: 1, X1: 800, Y1: 350, X2: 800, Y2: 450, Width: 10},
 	}
-	if out := findClearanceViolations(sameNet, nil, nil, nil, 6); len(out) != 0 {
+	if out := findClearanceViolations(sameNet, nil, nil, nil, 6, 6); len(out) != 0 {
 		t.Errorf("same-net crossing is a junction, got %d: %+v", len(out), out)
 	}
 	// Different LAYER crossing is fine (that's what layers are for).
@@ -661,7 +686,7 @@ func TestFindClearance_CrossingTracksAreReported(t *testing.T) {
 		{ID: "a", Net: "A", Layer: 1, X1: 700, Y1: 400, X2: 900, Y2: 400, Width: 10},
 		{ID: "b", Net: "B", Layer: 2, X1: 800, Y1: 350, X2: 800, Y2: 450, Width: 10},
 	}
-	if out := findClearanceViolations(crossLayer, nil, nil, nil, 6); len(out) != 0 {
+	if out := findClearanceViolations(crossLayer, nil, nil, nil, 6, 6); len(out) != 0 {
 		t.Errorf("cross-layer crossing is legal, got %d: %+v", len(out), out)
 	}
 }
