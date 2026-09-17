@@ -101,6 +101,15 @@ func TestInterleavedPortsMayKeepNamedIslandsButDirectMustJoin(t *testing.T) {
 	if err = validateSchCompositionNets(&p); err != nil {
 		t.Fatal(err)
 	}
+	pins, err := schematicVariantPhysicalPinIslands(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a1, a3 := pins[schematicVariantPinIdentity{"connector", "1"}], pins[schematicVariantPinIdentity{"connector", "3"}]
+	b2, b4 := pins[schematicVariantPinIdentity{"connector", "2"}], pins[schematicVariantPinIdentity{"connector", "4"}]
+	if a1 != a3 || b2 != b4 || a1.root == b2.root {
+		t.Fatal("same-side repeated module ports were not joined into distinct local trees", pins)
+	}
 	again, err := PlanSchematicLayout(in)
 	if err != nil || !reflect.DeepEqual(out, again) {
 		t.Fatal("nondeterministic", err)
@@ -115,13 +124,13 @@ func TestInterleavedPortsMayKeepNamedIslandsButDirectMustJoin(t *testing.T) {
 	if err != nil {
 		t.Fatal("verified proper crossings should permit direct ABAB", err)
 	}
-	pins, err := schematicVariantPhysicalPinIslands(direct)
+	directPins, err := schematicVariantPhysicalPinIslands(direct)
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, b := pins[schematicVariantPinIdentity{"connector", "1"}], pins[schematicVariantPinIdentity{"connector", "2"}]
-	if a != pins[schematicVariantPinIdentity{"connector", "3"}] || b != pins[schematicVariantPinIdentity{"connector", "4"}] || a.root == b.root {
-		t.Fatal("direct ABAB split or shorted", pins)
+	a, b := directPins[schematicVariantPinIdentity{"connector", "1"}], directPins[schematicVariantPinIdentity{"connector", "2"}]
+	if a != directPins[schematicVariantPinIdentity{"connector", "3"}] || b != directPins[schematicVariantPinIdentity{"connector", "4"}] || a.root == b.root {
+		t.Fatal("direct ABAB split or shorted", directPins)
 	}
 }
 

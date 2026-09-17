@@ -90,12 +90,15 @@
 - Fix the schematic architecture baseline around immutable observations, explicit core/peripheral ownership, complete zone solving, rigid whole-zone page placement, fixed conversion, official readback, strict gates, and explicit save; mark superseded workflows across project and Skill documentation.
 - Add sanitized ceshi geometry regressions and positive/negative tests for Designator collisions, Value exclusion, live frame overlaps, and incomplete visual evidence.
 
-## [1.5.0] — 2026-09-12
+## [1.5.0] — 2026-09-17
 
 ### Added
 
 - Expose reusable, library-independent schematic layout calculation and deterministic SVG rendering through `sch layout-plan` and `sch layout-render`.
 - Add isolated zone repair, consistent sheet/zone padding, stable Z-order packing, bounded same-page alternatives, and orientation candidates for compact layouts. Compile approved page placements without silently repacking them.
+- Add data-driven schematic zone ownership review, explicit core/peripheral attachments, source-preserving `sch layout-edit`, and protected local marker repair with fresh-snapshot and out-of-scope stability guards.
+- Add bounded obstacle-aware directional A* routing on the 5-raw grid, physical-island-to-tree joins, legal non-contact X crossings, whole-round rerouting, evidence-driven component relocation, and replayable routing diagnostics with shared budgets.
+- Add strict live schematic gates for zone frames, Designator geometry, marker collisions, pin-exit direction, wire/body contact, physical bridges/orphans, instance identity, and source/readback connectivity equality. Non-Designator properties remain excluded from layout collision and frame bounds.
 - Add a sanitized public reusable-module catalog with explicit `draft`, `topology_ready`, and `compose_ready` readiness checks. Source exercises, reference drawings, private instance identities and local drafts are not release assets.
 - Support verified offline development packages through `update --local-dir`, exact development-runtime checks, and Makefile targets for installed local daemon restart and validation.
 
@@ -103,6 +106,9 @@
 
 - Bound and reuse request-local device identity reads in the Connector, preserving strict provenance checks and a dedicated CLI response budget.
 - Preserve direct-net constraints during dense-pin naming retries; compact marker leads and module frames; normalize floating-point arithmetic tails without hiding meaningful geometry changes.
+- Preserve same-side repeated signal `module_port` pins as one real in-zone fanout tree after a functional split while retaining the source cross-zone port contract. Keep interleaved nets electrically separate and verify the exact physical islands that were joined.
+- Treat measured Designator bboxes as closed routing/placement obstacles, avoid caching transient maze-budget failures across later legal branches, and tolerate only sub-micro-unit floating-point drift around the documented 1-raw marker graze threshold.
+- Preserve native instance IDs, device identities, properties, wires, pin nets and NC state through fixed-page Compose/Apply. Split fast project-wide designator preflight from the exhaustive target-page preservation guard without weakening either result.
 - Use the correct net-port action kind when materializing schematic data.
 - Preserve the intended eight-second place execution window plus response grace, retain structured dispatch errors, and advise readback before retrying placement on either HTTP or daemon deadline failures (#213).
 - Use the shared 35-second connect-pin request budget in schematic layout and recovery callers (#205).
@@ -113,7 +119,7 @@
 
 - This release includes Connector runtime changes. Upgrade CLI/daemon and Skill together, and install a **1.5.x Connector**; a 1.4.x Connector is outside the new compatibility line. The Connector UUID remains unchanged.
 - The automated release checks cover Go, Connector, Skill data and packaging, plus native installation smoke tests. They do not replace live electrical-design or complete requirement-to-four-layer-PCB acceptance; the full board regression was not rerun for this release.
-- Official schematic image export returned no file in a live EasyEDA 3.2.186 session, including for an unchanged original symbol. The cause of this session-specific export failure remains unresolved; this release does not claim an export fix or completed button-symbol replacement.
+- Live EasyEDA Pro 3.2.186 validation completed the P1 six-zone Type-C/ESD split with the default routing budgets, protected Web Apply, strict gate, unchanged connectivity/instance properties, explicit save, and official SVG/PNG export. P2 read-only regression passed earlier in the development cycle; this remains schematic scope rather than full-board release acceptance.
 
 ## [1.4.9-dev.1] — 2026-09-12 (local development only)
 

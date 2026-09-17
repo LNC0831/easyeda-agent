@@ -231,5 +231,30 @@ func schematicMandatoryPeripheralSignalPolicies(input *SchematicLayoutInput) map
 			input.NetPolicies[net] = "direct"
 		}
 	}
+	// A module_port remains the external zone-boundary contract, but repeated
+	// signal pins on the same symbol side need one physical in-zone fanout tree.
+	// Otherwise a dense connector can fall back to one label per 10-raw pin and
+	// become geometrically impossible after its downstream protection device is
+	// split into a separate zone.  Promote only the detached local input copy;
+	// the source zones and their cross-zone policy remain module_port.
+	for _, c := range input.Components {
+		counts := map[string]map[string]int{}
+		for _, pin := range c.Measurement.Pins {
+			if pin.Net == "" || input.NetPolicies[pin.Net] != "module_port" || roles[pin.Net] != "signal" {
+				continue
+			}
+			side, err := libPinSide(pin, c.Measurement.BBox)
+			if err != nil {
+				continue
+			}
+			if counts[pin.Net] == nil {
+				counts[pin.Net] = map[string]int{}
+			}
+			counts[pin.Net][side]++
+			if counts[pin.Net][side] > 1 {
+				input.NetPolicies[pin.Net] = "direct"
+			}
+		}
+	}
 	return roles
 }

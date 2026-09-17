@@ -35,7 +35,7 @@ func compositionMarkerGeometry(p *powerLayoutPlan) ([]layoutBBox, error) {
 		}
 		obstacles = append(obstacles, layoutBBox{MinX: math.Min(f.PinX, x) - 0.5, MinY: math.Min(f.PinY, y) - 0.5, MaxX: math.Max(f.PinX, x) + 0.5, MaxY: math.Max(f.PinY, y) + 0.5})
 	}
-	if findings := analyzeMarkerGeometry(comps, nil, sheetSourceNone, 1); len(findings) > 0 {
+	if findings := analyzeMarkerGeometry(comps, nil, sheetSourceNone, schMarkerOverlapEps); len(findings) > 0 {
 		return nil, fmt.Errorf("marker geometry: %d overlap(s); %s", len(findings), findings[0].Message)
 	}
 	if err := compositionWireMarkerGeometry(p, comps); err != nil {

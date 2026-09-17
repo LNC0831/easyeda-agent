@@ -401,7 +401,11 @@ func markerOverlapFindings(comps []layoutComp, eps float64) []checkFinding {
 				continue // already reported (with a keep/delete fix) by duplicate-net-marker
 			}
 			ox, oy, overlap := overlapExtent(*a.BBox, *b.BBox)
-			if !overlap || math.Min(ox, oy) <= eps {
+			// Platform bboxes are floating point (often ending in .499999...),
+			// so an intended one-raw pitch/font graze can arrive as
+			// 1.0000000000002 and spuriously cross the documented eps=1 floor.
+			// This tolerance is numeric only; a real 2-raw overlap still reports.
+			if !overlap || math.Min(ox, oy) <= eps+1e-6 {
 				continue
 			}
 			// Order the pair by id for stable output.

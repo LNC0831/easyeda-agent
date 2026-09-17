@@ -1,6 +1,7 @@
 package app
 
 import (
+	"math"
 	"testing"
 )
 
@@ -345,6 +346,12 @@ func TestMarkerOverlap_PitchFontGrazeTolerated(t *testing.T) {
 	graze := []layoutComp{mk("a", 0, 11), mk("b", 10, 21)}
 	if got := markerOverlapFindings(graze, schMarkerOverlapEps); len(got) != 0 {
 		t.Fatalf("1 单位竖叠该容忍,报了 %d 条", len(got))
+	}
+	// Real editor coordinates contain sub-ulp drift around half-unit stroke
+	// bounds; it must not turn the same 1-unit graze into a strict failure.
+	graze[1] = mk("b", math.Nextafter(10, 0), 21)
+	if got := markerOverlapFindings(graze, schMarkerOverlapEps); len(got) != 0 {
+		t.Fatalf("浮点漂移后的 1 单位竖叠该容忍,报了 %d 条", len(got))
 	}
 	// 竖叠 2 → 真实叠,必须报(容差不许吞掉真问题)。
 	real := []layoutComp{mk("a", 0, 11), mk("b", 9, 20)}

@@ -431,6 +431,43 @@ device、uniqueId、BOM/PCB 标志、供应商和自定义属性的规范化哈�
 “五区默认 200000 节点预算的全量重新求解已普遍解决”。该全量重求解缺口、P2 新一轮现场
 回归、S0–S6/P0–P10 整板验收和 `v1.5.0` 正式发布均不在本节的通过范围内。
 
+## P1 Type-C/ESD 六区拆分与默认预算重算（2026-09-17）
+
+用户明确要求把原 `USB_TYPE_C` 拆成两个独立功能区：`USB_TYPE_C` 仅含
+USBC1/R3/R4，`USB_ESD_PROTECTION` 以 D1 为核心并仅含 D1/C8。两区声明软相邻，跨区
+`USB_DP`、`USB_DM`、`USB5V` 保持 `module_port`；源数据 SHA-256 为
+`0515afb38af6b1b6756253615ac91f851cbc1e59bde38c3d5dacdc99c6feb859`，证据保存在
+`.easyeda/p1-six-zone-validation-20260917/`。
+
+拆分暴露了通用缺口：USBC1 同侧重复的 DP/DM 引脚在 `module_port` 快速路径失败后会退化为
+逐引脚标签，10 raw 间距下几何必然冲突。算法现在只在求解副本中把“同器件、同侧、重复的
+信号 module_port”提升为 `direct`，先形成真实且互不短路的区内线树；源 zone 的跨区策略
+保持 `module_port`。ABAB 交错最小回归新增了逐引脚物理线岛断言。现场首次 Apply 后严格门
+还发现一个预期 1 raw 的字体擦边被 `1.000000...` 浮点尾差误判；共享 marker 判据加入
+`1e-6` 数值容差，2 raw 真重叠仍报警并有回归覆盖。
+
+六个 zone 在原默认预算 `maxCandidates:200000`、`routing.maxExpandedNodes:200000`、
+`routing.maxReroutes:4` 下全部完成，未放宽 USBC1 的 `allowedRotations:[0,180]`。报告记录
+区内路由 178 ms；USB_TYPE_C 展开 4323 个 A* 节点、完成 3 次指定线岛合并。纸张层生成
+一张 A4，Type-C 与 ESD 相邻，其余四区保持 POWER_ORING、EXT_5V_INPUT、USB_SERIAL、
+BUCK_3V3。
+
+首个 188 步队列在第 186 步被上述浮点误判拦截，未使用 resume。修复判据并 fresh 回读后，
+页面已匹配目标；重新 Compose 得到 16 步完整验证队列，dry-run 通过且 `16/16` 成功。
+独立 `sch gate --strict` 最终 `verdict:pass`：17 个器件 0 overlap/tight/pin-coincidence/
+off-grid/out-of-sheet，marker overlap 为 0，37 棵物理线树 0 bridge/orphan，官方 DRC
+fatal/error/warn/info 全为 0。18 条 `wire-crossing` 全部是有逐 pin 和物理线岛证据的合法
+无接点内部 X，级别为 INFO，不是警告或豁免错误。
+
+最终分组回读明确得到 `USB_TYPE_C=USBC1,R3,R4`、`USB_ESD_PROTECTION=D1,C8`；修改前后
+connectivity diff 为 `{}`，17 个器件的 primitiveId、device identity 与 properties diff 为
+0 行。显式保存返回 `saved:true`。官方导图 `p1-six-zone-final.svg` 和 PNG 的 SHA-256 分别为
+`5a5e695e44eaa7bc907816023c66afd0f731f35f94c2570b323453208afd71cc`、
+`5d9445540e7ed74cb8ec2294b4aee428b8891abb037bdb45b645909b110d5a8e`。
+
+本节证明 P1 六区通用算法、Web Apply 与回读闭环；不等同于 P2 新一轮现场回归、客户需求
+S0–S6/P0–P10 整板验收或 `v1.5.0` 正式发布。
+
 ## 明确边界
 
 有界窗口、姿态菜单与预算不是完备搜索；仍可能重复探索局部预算窗口。失败不证明全局无解，
