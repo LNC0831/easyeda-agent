@@ -112,6 +112,7 @@ func newSchCmd(cfg *appConfig, stdout, stderr io.Writer) *cobra.Command {
 	sch.AddCommand(newSchComposeCmd(stdout, stderr))
 	sch.AddCommand(newSchLibLayoutCmd(stdout, stderr))
 	sch.AddCommand(newSchLayoutPlanCmd(stdout))
+	sch.AddCommand(newSchZoneReviewCmd(stdout))
 	sch.AddCommand(newSchLayoutEditCmd(stdout))
 	sch.AddCommand(newSchLayoutRenderCmd(stdout))
 	sch.AddCommand(newSchLayoutSheetPlanCmd(stdout))

@@ -357,6 +357,42 @@ Apply 后又独立 fresh 回读，不以队列内自报代替验收：
 将现有 Web 标签切回 P1。至此 dev.14 的 P1/P2 原理图现场闭环通过，但 PCB、完整客户需求
 S0–S6/P0–P10、发布资产与正式 tag/release 等 v1.5.0 发布验收仍未执行。
 
+## 2026-09-17：Zone 归属提醒规则（本地源码验证）
+
+新增只读 `sch zone-review --from zones.json --report review.json`，并接入
+`layout-plan --zones` 求解前 stderr 提醒和成功/失败报告的 `zoneReview`。
+规则给 AI 提供证据和建议，由 AI 决定是否修改源 JSON；没有自动拆区或改页面。
+多个 >=4 引脚器件只是多核心弱线索，不按 U/D/J 等位号推断功能。
+非电源/地子图按明确 netPolicies 计算，不宣称证明现场物理直连。
+
+使用 `generated/layout-zones-p1.json` 和 `generated/layout-zones-p2.json` 保留输入，
+本地构建 CLI 的结果保存在 `.easyeda/zone-review-validation-20260917/`：
+
+- `p1-review.json`：7 条提醒。POWER_ENTRY 的 D1/USBC1 命中多引脚成员规则；
+  D3/U3 命中与核心分离的非电源/地子图；D3→D2 命中仅共享 +5V 的 attachment。
+  其余 4 条为电源/地关联的外围提醒，需语义复核，不直接认定错误或拆出电容。
+- `p2-review.json`：2 条提醒，均为 C1/C2→U1 的电源/地 attachment；
+  未触发多引脚成员或分离子图规则，不等于自动认定功能归属正确。
+
+回归包含 P1 型最小输入、正反拓扑、稳定 ID/位号/网名重命名、输入顺序与坐标/姿态
+不影响规则、原始输入不变、未知引脚/NC 冲突/attachment 环拒绝、隐式宿主不被改为
+核心，以及求解成功/失败均保留提醒、提醒不改变退出码、源文件不可被报告覆盖。
+`go test ./...` 通过。此批只验证规则与 CLI，不替代重新布局、Web Apply 或发布验收。
+
+随后用两个独立 `mktemp` 源码副本验证“保留问题→AI 改源→重算”：副本排除 `.git`、
+旧 `.easyeda`、`bin/dist/node_modules`，各自在副本内构建和运行 `go test ./...`。
+第一轮保留 before 的 7 条提醒和源 SHA，拆成 USB_TYPE_C、POWER_ORING、EXT_5V_INPUT、
+USB_SERIAL、BUCK_3V3 后，17 个组件对象、measurement、pin/net/NC、旋转授权和稳定 ID
+逐字段不变；错误的 D3/U3 分离子图提醒消失，其他 6 条语义提醒保留，五区求解完成。
+
+第一轮同时发现功能核心与布局锚点的授权冲突：USBC1 源 `allowedRotations:[0,180]` 包含
+实测 180°，改成核心却被旧规则拒绝。现已将核心的**有效**许可收窄到实测角，不修改源列表。
+第二个全新副本以 USBC1 为 USB_TYPE_C 核心复测：全量测试通过，五区/17 ID 唯一覆盖，
+USBC1 输出 `(0,0)`、rotation 180、mirror false，源授权仍为 `[0,180]`，所有输出候选的
+有效核心授权均为 `[180]`。布局完成 0.69 秒，报告路由 60 ms。留档位于
+`.easyeda/zone-review-clean-validation-20260917/` 与
+`.easyeda/zone-review-core-clean-validation-20260917/`；均未安装 CLI、连接 Web 或 Apply。
+
 ## 明确边界
 
 有界窗口、姿态菜单与预算不是完备搜索；仍可能重复探索局部预算窗口。失败不证明全局无解，

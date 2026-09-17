@@ -268,6 +268,28 @@ ref 引用也要按组件 ID 同步；不要对 JSON 做全局字符串替换，
 
 ## 由引脚计算 Lib 内部
 
+### Zone 归属复核提醒
+
+`easyeda sch zone-review --from zones.json --report review.json` 是离线、只读的规则检查，
+输入与 `layout-plan --zones` 相同，省略 `--report` 时 JSON 输出到 stdout。报告绑定源 SHA-256。
+`layout-plan --zones` 在求解前自动向 stderr 提醒，并在可选报告的 `zoneReview` 中保存相同
+规则结果；求解失败仍保留复核报告。输出布局格式和既有硬门禁不变。
+
+- `multiple-multipin-members`：同区存在至少两个具有 >=4 个物理引脚的器件。只是多核心的
+  弱线索，连接器和保护阵列可能合理同区；不把引脚数量等同芯片类别或强制拆区。
+- `non-rail-subgraph-detached`：去除 `local_power/local_ground` 网络后，存在不含核心、
+  但有至少两个成员通过其余网络关联的子图。提示复核完整子电路；孤立去耦不按本规则拆出。
+- `rail-only-attachment`：显式 attachment 的两端器件仅共享 `local_power/local_ground`。
+  去耦可以合法命中，需核对功能依据；共同电源/地本身不证明专属归属。
+
+报告含稳定组件 ID、显示位号、涉及网络策略、逐脚证据和建议。算法只使用显式网络策略，
+`direct/module_port` 仍可能是电源支路，不能把它们自动认作真实信号；报告明确此限制。
+这些是源网表关系，不是现场物理线岛证明。`status:review-required` 仅提醒，退出 0；
+`status:no-findings` 只表示规则未命中。输入不合法/硬归属错误返回 `invalid` 和非零退出。
+AI 可以直接修改源数据副本，逐条解释保留或调整的理由；成员迁移须一起处理 attachment、
+marker 的归属和跨区策略，保持 pin→net/NC 与原本必需的真实直连，随后重新求解及回读。
+本检查不自动修改 JSON、生成执行队列、认可 AI 猜测或替代布局/电气验收。
+
 完整效果必须由整份 `sch layout-plan --zones` 成功结果生成，再交纸张规划和固定渲染器。
 逐区捕获错误的诊断输出不能拼装为完整候选；保留诊断供修算法，但不以原测量占位替代失败区域。
 发布本地效果时记录输入/输出哈希、源码提交、命令与覆盖检查；这不是 Git tag 或安装包发布。
@@ -337,6 +359,8 @@ dev.8 的放置失败从几何检查处携带结构化归属，记录失败器�
 `optimization:{maxVariants:4,maxAttempts:24}`，外围 `components[].allowedRotations`
 列出许可的**绝对 stored rotation**（0/90/180/270，含源角度，不允许重复）。
 默认锁定实测姿态；核心锚点/姿态、镜像、器件身份、pin→net/NC 不变。不根据位号猜授权。
+器件经归属复核改为核心时可以保留源数据已有的 `allowedRotations`；该列表仍须合法且包含
+实测角度，求解器只把核心的有效许可收窄为实测角度，不要求为改归属而篡改组件证据。
 先保留完整合法 baseline，再尝试许可的刚体旋转和 5/10/20 raw 内移；新姿态先在现位置
 重建接线，失败可在该区有限重排。所有候选必须重新检查器件/文字/引脚/线/标记碰撞与
 命名连通；**基线同一物理导线岛内的引脚不允许退化为多个同名标签岛**。

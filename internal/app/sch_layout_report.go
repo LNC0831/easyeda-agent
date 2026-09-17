@@ -12,19 +12,20 @@ import (
 )
 
 type schLayoutReport struct {
-	SchemaVersion             int    `json:"schemaVersion"`
-	Operation                 string `json:"operation"`
-	AlgorithmVersion          string `json:"algorithmVersion"`
-	Scope                     string `json:"scope"`
-	Status                    string `json:"status"`
-	Phase                     string `json:"phase"`
-	Zones                     bool   `json:"zones"`
-	SourceSHA256              string `json:"sourceSha256,omitempty"`
-	Error                     string `json:"error,omitempty"`
-	FailureClass              string `json:"failureClass,omitempty"`
-	RoutingDurationMS         int64  `json:"routingDurationMs,omitempty"`
-	Diagnostics               []any  `json:"diagnostics"`
-	GlobalInfeasibilityProven bool   `json:"globalInfeasibilityProven"`
+	SchemaVersion             int                  `json:"schemaVersion"`
+	Operation                 string               `json:"operation"`
+	AlgorithmVersion          string               `json:"algorithmVersion"`
+	Scope                     string               `json:"scope"`
+	Status                    string               `json:"status"`
+	Phase                     string               `json:"phase"`
+	Zones                     bool                 `json:"zones"`
+	SourceSHA256              string               `json:"sourceSha256,omitempty"`
+	Error                     string               `json:"error,omitempty"`
+	FailureClass              string               `json:"failureClass,omitempty"`
+	RoutingDurationMS         int64                `json:"routingDurationMs,omitempty"`
+	Diagnostics               []any                `json:"diagnostics"`
+	GlobalInfeasibilityProven bool                 `json:"globalInfeasibilityProven"`
+	ZoneReview                *SchematicZoneReview `json:"zoneReview,omitempty"`
 }
 
 func schLayoutReportPaths(from, out, report string) error {
@@ -86,6 +87,9 @@ func writeSchLayoutReport(path string, source []byte, phase string, zones bool, 
 		Scope: "offline-layout-only", Status: "planned", Phase: "complete", Zones: zones, Diagnostics: []any{}}
 	if source != nil {
 		r.SourceSHA256 = sha256Hex(source)
+		if zones {
+			r.ZoneReview, _ = reviewSchematicZonesJSON(source)
+		}
 	}
 	if cause != nil {
 		r.Status, r.Phase, r.Error = "failed", phase, cause.Error()

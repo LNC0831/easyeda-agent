@@ -36,8 +36,12 @@ func schematicOptimizationSettings(in SchematicLayoutInput) (*SchematicLayoutOpt
 		if len(c.AllowedRotations) > 0 && !hasSource {
 			return nil, nil, fmt.Errorf("component %s allowedRotations must include source rotation", c.ID)
 		}
-		if c.ID == in.CoreComponentID && (len(angles) != 1 || angles[0] != source) {
-			return nil, nil, fmt.Errorf("core component %s rotation is locked to source", c.ID)
+		if c.ID == in.CoreComponentID {
+			// A component can become the functional core after zone review while
+			// retaining its source-level rotation authorization. The layout core
+			// is still a fixed anchor: narrow the effective solver permission to
+			// its measured pose instead of forcing an unrelated source rewrite.
+			angles = []float64{source}
 		}
 		sort.Float64s(angles)
 		allowed[c.ID] = angles

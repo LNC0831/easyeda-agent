@@ -51,23 +51,19 @@ type SchematicZonesResult struct {
 	CandidatesUsed int                   `json:"candidatesUsed"`
 }
 
-// PlanSchematicZones computes independent, core-normalized zones, not sheet
-// positions or rendered frames. No partial result escapes on any zone failure.
-func PlanSchematicZones(in SchematicZonesInput) (*SchematicZonesResult, error) {
+type schematicZoneOwnership struct {
+	components map[string]SchematicLayoutComponent
+	owners     map[string]string
+}
+
+// Shared source gate: review and planning must agree on explicit ownership.
+func validateSchematicZoneOwnership(in SchematicZonesInput) (*schematicZoneOwnership, error) {
 	if in.SchemaVersion != 1 || len(in.Zones) == 0 || len(in.Components) == 0 {
 		return nil, fmt.Errorf("schemaVersion:1, zones and components required")
 	}
 	if err := validateSchematicSpacing(in.Spacing); err != nil {
 		return nil, err
 	}
-	budget := in.MaxCandidates
-	if budget == 0 {
-		budget = 20000
-	}
-	if budget < 1 || budget > 1000000 {
-		return nil, fmt.Errorf("maxCandidates must be 1..1000000")
-	}
-	initial := budget
 	components := map[string]SchematicLayoutComponent{}
 	refs := map[string]bool{}
 	for _, c := range in.Components {
@@ -134,6 +130,25 @@ func PlanSchematicZones(in SchematicZonesInput) (*SchematicZonesResult, error) {
 			return nil, fmt.Errorf("unknown/cross-zone attachment %s", h.ComponentID)
 		}
 	}
+	return &schematicZoneOwnership{components: components, owners: owners}, nil
+}
+
+// PlanSchematicZones computes independent, core-normalized zones, not sheet
+// positions or rendered frames. No partial result escapes on any zone failure.
+func PlanSchematicZones(in SchematicZonesInput) (*SchematicZonesResult, error) {
+	index, err := validateSchematicZoneOwnership(in)
+	if err != nil {
+		return nil, err
+	}
+	components, owners := index.components, index.owners
+	budget := in.MaxCandidates
+	if budget == 0 {
+		budget = 20000
+	}
+	if budget < 1 || budget > 1000000 {
+		return nil, fmt.Errorf("maxCandidates must be 1..1000000")
+	}
+	initial := budget
 	out := &SchematicZonesResult{SchemaVersion: 1}
 	if in.Spacing != nil {
 		spacing := *in.Spacing

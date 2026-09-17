@@ -77,7 +77,6 @@ func TestSchematicOptimizationRejectsUnapprovedPoseOrLimits(t *testing.T) {
 		func(in *SchematicLayoutInput) { in.Components[1].AllowedRotations = []float64{90} },
 		func(in *SchematicLayoutInput) { in.Components[1].AllowedRotations = []float64{0, 45} },
 		func(in *SchematicLayoutInput) { in.Components[1].AllowedRotations = []float64{0, 0} },
-		func(in *SchematicLayoutInput) { in.Components[0].AllowedRotations = []float64{0, 90} },
 		func(in *SchematicLayoutInput) { in.Optimization.MaxVariants = 5 },
 		func(in *SchematicLayoutInput) { in.Optimization.MaxAttempts = 65 },
 		func(in *SchematicLayoutInput) { in.Optimization.MaxAttempts = -1 },
@@ -86,6 +85,30 @@ func TestSchematicOptimizationRejectsUnapprovedPoseOrLimits(t *testing.T) {
 		edit(&in)
 		if out, err := PlanSchematicLayout(in); out != nil || err == nil {
 			t.Fatal("invalid optimization accepted")
+		}
+	}
+}
+
+func TestSchematicOptimizationNarrowsCoreRotationAuthorization(t *testing.T) {
+	in := schematicOptimizationFixture()
+	in.Components[0].AllowedRotations = []float64{0, 90, 180, 270}
+	_, allowed, err := schematicOptimizationSettings(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(allowed[in.CoreComponentID], []float64{in.Components[0].Measurement.Rotation}) {
+		t.Fatalf("core effective rotations = %v", allowed[in.CoreComponentID])
+	}
+	out, err := PlanSchematicLayout(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, variant := range out.Variants {
+		for _, placement := range variant.Layout.Placements {
+			if placement.Designator == in.Components[0].Measurement.Designator &&
+				(placement.X != 0 || placement.Y != 0 || placement.Rotation != in.Components[0].Measurement.Rotation) {
+				t.Fatalf("variant moved or rotated core: %+v", placement)
+			}
 		}
 	}
 }

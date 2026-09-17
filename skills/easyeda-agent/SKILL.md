@@ -81,6 +81,11 @@ EasyEDA。纯 patch 更新不升级 Connector，也不要求重开 EasyEDA。不
 保留整套选中几何、框与位置，再生成受保护队列，不重新排版；
 字段与尚未覆盖的自动归属边界见 [schematic-data.md](references/schematic-data.md)。
 
+源数据归属先用 `sch zone-review --from zones.json --report review.json` 复核。
+`layout-plan --zones` 也自动在 stderr 提醒，`--report` 保存 `zoneReview`（求解失败亦保留）。
+AI 逐条看规则、器件/引脚与网络证据，决定保留并说明依据，或修改源 JSON 的成员、核心、
+attachment 和边界策略后重新检查/求解。提醒不自动拆区、不豁免硬错误；零提醒不证明语义正确。
+
 **先确定连接数据，再计算几何，最后转换与回读。** 新设计依据具体型号的数据手册和典型电路；
 已有图先导出 `sch connectivity`，未知引脚或网不能靠截图推断。
 器件参数按 [part-selection.md](references/part-selection.md) 留存来源原文和单位换算；

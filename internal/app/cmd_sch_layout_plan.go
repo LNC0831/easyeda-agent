@@ -52,6 +52,9 @@ Each zone: {id,title,coreComponentId,componentIds}.
 Optional zone placement:{samePageAs:<zone ID>,preferAdjacent?:true} is forwarded
 to sheet planning: hard same-page relation with an optional soft neighbor preference.
 Every component belongs to exactly one zone. Cross-zone signals use module_port.
+Zone ownership review hints are automatically printed to stderr before solving;
+--report includes zoneReview even when solving fails. These hints never auto-split
+zones or waive hard checks. Use sch zone-review to inspect without solving.
 Output contains independent local layouts/contentBounds and compact frame plans,
 not whole-page packing or rendered frames. Add identity/sheet evidence before compose/Apply.
 
@@ -86,6 +89,12 @@ Example:
 		if zones {
 			var input SchematicZonesInput
 			input, err = decodeSchematicZonesInput(raw)
+			if err == nil {
+				phase = "zone-review"
+				var review *SchematicZoneReview
+				review, err = reviewSchematicZonesJSON(raw)
+				printSchematicZoneReview(cmd.ErrOrStderr(), review)
+			}
 			if err == nil {
 				phase = "solve"
 				result, err = PlanSchematicZones(input)
