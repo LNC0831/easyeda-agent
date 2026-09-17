@@ -62,6 +62,7 @@ On top of those three, easyeda-agent adds the engineering middle layer: a self-h
 
 | Domain | What it does |
 |---|---|
+| Private device libraries | Create Symbol, Footprint and Device assets from documented pin and package geometry. [AS07 case study (Chinese)](docs/examples/as07-m1101d-sma/README.md) includes the drawing, final specifications, official renders and readbacks; follow-up edits used the API debug path. Instance wiring, PCB DRC and physical fit remain unverified. |
 | **Circuit-block library (flagship)** | Community-built, credited library of **proven peripheral subcircuits** (CH340 USB-serial, ESP32 auto-download, button de-bounce, USB-hub, buck…). **Copy the topology, only rebind boundary nets** to reuse |
 | Schematic | Canonical connectivity → Lib geometry → compact Z-order `sch compose` on one sheet → `sch apply`; normal designators stay separate from functional Role; each pink dashed frame fits its contents with a minimum inset and a 0.2 inch title |
 | Validation | Local data checks, Apply readback of pins/nets/NC/geometry, and the four-stage `sch gate --strict`: layout-lint → check → bridge-check → drc |

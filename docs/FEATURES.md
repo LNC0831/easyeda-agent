@@ -4,6 +4,7 @@
 
 ## 当前基线
 
+- 私有器件库现场佐证：[AS07-M1101D-SMA](examples/as07-m1101d-sma/README.md)。从用户尺寸/引脚图创建 Symbol、Footprint、Device，再按反馈修正符号和框外丝印；保留最终规格、官方渲染和回读数据。额外文字及修正使用官方 API 调试路径，不代表单条 build 已覆盖；未完成实例接线、PCB DRC 或实物装配验证。
 - 原理图统一架构：[数据驱动架构基准](../skills/easyeda-agent/references/schematic-data.md#数据驱动架构基准)。原始快照保留，源数据驱动计算、检查和修复；不是现场逐件试摆后看图兜底。
 - 通用两层布局：`layout-plan --zones` 消费明确核心/外围归属和约束，`layout-sheet-plan` 只选择/平移完整候选；固定 `layout-render` 与 `compose --layout-page` 保留同一目标。任一区失败不能拼半成品。
 - 局部数据编辑：`sch layout-edit` 按稳定 ID 将核心及其唯一归属 zone 作为一个相对坐标系平移；刚体目标碰撞时固定核心目标并仅重算本区。单脚标签修复只沿官方引脚外向轴生成候选，并通过 daemon 作用域 action 逐对象核对、串行替换和回读；普通写线门禁不放宽。
