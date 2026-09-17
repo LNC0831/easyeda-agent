@@ -517,7 +517,7 @@ func validateLibRoutingEdge(p *powerLayoutPlan, net string, a, b [2]float64) err
 			return schWireObstruction(p, "wire-body", fmt.Errorf("%s wire passes through %s body", net, component.Designator), []string{net}, component.Designator)
 		}
 		for _, box := range component.TextBBoxes {
-			if plSegmentBox(a, b, box) {
+			if plSegmentTouchesBox(a, b, box) {
 				return schWireObstruction(p, "wire-text", fmt.Errorf("%s wire crosses %s Designator", net, component.Designator), []string{net}, component.Designator)
 			}
 		}
@@ -703,7 +703,7 @@ func libMazeRoute(p *powerLayoutPlan, source, target libIsland, routing *schemat
 		if len(cached) > 0 {
 			evidence = append([]SchematicRoutingRejection(nil), cached[0].evidence...)
 			ownersComplete = cached[0].ownersComplete
-		} else if kind != "expanded-node-budget-exhausted" {
+		} else if schematicMazeFailureCacheable(kind) {
 			routing.cache[cacheKey] = schematicMazeCacheEntry{kind: kind, message: cause.Error(), evidence: append([]SchematicRoutingRejection(nil), evidence...), ownersComplete: ownersComplete}
 		}
 		layout := *p
@@ -889,6 +889,15 @@ func libMazeRoute(p *powerLayoutPlan, source, target libIsland, routing *schemat
 		return nil, failure("final-validation-failed", lastErr)
 	}
 	return nil, failure("no-path-within-bounds", fmt.Errorf("no legal path in 40/80/160/320 raw expanded envelopes"))
+}
+
+func schematicMazeFailureCacheable(kind string) bool {
+	switch kind {
+	case "expanded-node-budget-exhausted", "relocation-budget-reserved", "route-attempt-node-limit":
+		return false
+	default:
+		return true
+	}
 }
 
 func clonePowerLayoutWires(wires []powerLayoutWire) []powerLayoutWire {

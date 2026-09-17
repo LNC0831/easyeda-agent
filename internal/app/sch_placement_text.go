@@ -34,7 +34,7 @@ func validatePlacementText(p *powerLayoutPlan, sheet layoutBBox) error {
 				}
 			}
 			for _, w := range segments {
-				if plSegmentBox(w.Points[0], w.Points[1], box) {
+				if plSegmentTouchesBox(w.Points[0], w.Points[1], box) {
 					return schWireObstruction(p, "wire-text", fmt.Errorf("text collision: %s wire / %s label", w.Net, c.Designator), []string{w.Net}, c.Designator)
 				}
 			}

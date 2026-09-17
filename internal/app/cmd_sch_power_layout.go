@@ -651,3 +651,15 @@ func plSegmentBox(a, b [2]float64, r layoutBBox) bool {
 	}
 	return a[1] > r.MinY && a[1] < r.MaxY && math.Max(a[0], b[0]) > r.MinX && math.Min(a[0], b[0]) < r.MaxX
 }
+
+// plSegmentTouchesBox is deliberately stricter than plSegmentBox: rendered
+// Designator ink is an obstacle on its measured boundary as well as in its
+// interior.  Keep the older open-rectangle predicate for symbol bodies and
+// marker geometry, where a wire ending at an owned boundary can be legal.
+func plSegmentTouchesBox(a, b [2]float64, r layoutBBox) bool {
+	const epsilon = 1e-6
+	if a[0] == b[0] {
+		return a[0] >= r.MinX-epsilon && a[0] <= r.MaxX+epsilon && math.Max(a[1], b[1]) >= r.MinY-epsilon && math.Min(a[1], b[1]) <= r.MaxY+epsilon
+	}
+	return a[1] >= r.MinY-epsilon && a[1] <= r.MaxY+epsilon && math.Max(a[0], b[0]) >= r.MinX-epsilon && math.Min(a[0], b[0]) <= r.MaxX+epsilon
+}

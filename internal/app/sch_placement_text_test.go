@@ -31,6 +31,28 @@ func TestPlacementTextObstacles(t *testing.T) {
 	}
 }
 
+func TestDesignatorWireObstacleUsesClosedMeasuredBounds(t *testing.T) {
+	box := layoutBBox{50, 10, 80, 20}
+	for name, points := range map[string][2][2]float64{
+		"interior": {{40, 15}, {90, 15}},
+		"edge":     {{50, 0}, {50, 30}},
+		"corner":   {{40, 10}, {50, 10}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := powerLayoutPlan{
+				Placements: []powerLayoutPlacement{{Designator: "R_SYN", X: 0, Y: 0, BBox: layoutBBox{-5, -5, 5, 5}, TextBBoxes: []layoutBBox{box}}},
+				Wires:      []powerLayoutWire{{Net: "N", Points: [][2]float64{points[0], points[1]}}},
+			}
+			if err := validatePlacementText(&p, layoutBBox{-100, -100, 100, 100}); !isWireTextObstruction(err) {
+				t.Fatalf("%s contact did not block wire: %v", name, err)
+			}
+		})
+	}
+	if plSegmentTouchesBox([2]float64{40, 9}, [2]float64{90, 9}, box) {
+		t.Fatal("one-raw clearance was mistaken for text contact")
+	}
+}
+
 func TestPlacementTextTranslationAndMarkerSearch(t *testing.T) {
 	c := powerLayoutPlacement{Designator: "U_SYN", BBox: layoutBBox{-20, -20, 20, 20}, TextBBoxes: []layoutBBox{{40, -10, 100, 15}}, Pins: []powerLayoutPin{{Number: "1", Net: "SIGNAL", X: 30, Y: 0}}}
 	before := c.TextBBoxes[0]

@@ -142,7 +142,10 @@ func futureHostSearchFixture(t *testing.T, shared bool) (*schematicRepairSearch,
 	t.Helper()
 	in := dependencyBackjumpFixture()
 	in.Components = in.Components[:3]
-	in.Components[0].Measurement.Pins = append(in.Components[0].Measurement.Pins, SchematicPin{Number: "2", Net: "AUX", X: 0, Y: 310})
+	// Keep the synthetic pin outside the core's measured Designator bbox.  Text
+	// bounds are closed obstacles, so the old y=310 corner contact was itself an
+	// invalid source fixture and masked the dependency-order behavior under test.
+	in.Components[0].Measurement.Pins = append(in.Components[0].Measurement.Pins, SchematicPin{Number: "2", Net: "AUX", X: 0, Y: 320})
 	in.Components[2].Measurement.BBox = SchematicBox{-6, -1, 6, 1}
 	in.Components[2].Measurement.Pins[0].X = 10
 	in.NetPolicies["AUX"] = "local_power"

@@ -65,6 +65,57 @@ func TestLibMazeRouteFindsMultiBendBeyondLegacyDetour(t *testing.T) {
 	}
 }
 
+func TestMazeTemplateIsRevalidatedAgainstNewDesignatorObstacle(t *testing.T) {
+	source := mazeTestPart("A1", "N", layoutBBox{-20, -10, 0, 10}, powerLayoutPin{Number: "1", Net: "N", X: 5, Y: 0, Rotation: mazeTestRotation(0)})
+	target := mazeTestPart("B1", "N", layoutBBox{200, -10, 220, 10}, powerLayoutPin{Number: "1", Net: "N", X: 195, Y: 0, Rotation: mazeTestRotation(180)})
+	labelOwner := powerLayoutPlacement{Designator: "R1", X: 100, Y: 100, BBox: layoutBBox{95, 95, 105, 105}}
+	p := powerLayoutPlan{Placements: []powerLayoutPlacement{source, target, labelOwner}}
+	islands := libIslands(&p)
+	ctx, _ := newSchematicRoutingContext(&SchematicRoutingOptions{MaxExpandedNodes: 20000, MaxReroutes: 1}, nil)
+	ctx.policies = map[string]string{"N": "direct"}
+	first, err := libMazeRoute(&p, islands[0], islands[1], ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked := p
+	blocked.Placements = append([]powerLayoutPlacement(nil), p.Placements...)
+	blocked.Placements[2].TextBBoxes = []layoutBBox{{90, -5, 110, 5}}
+	beforeHits := ctx.templateHits
+	second, err := libMazeRoute(&blocked, islands[0], islands[1], ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctx.templateHits != beforeHits {
+		t.Fatal("route template crossing a newly measured Designator was reused")
+	}
+	trial := blocked
+	trial.Wires = libAppendRoute(trial.Wires, second)
+	if err := validateLibGeometry(&trial); err != nil {
+		t.Fatalf("replacement route is invalid: %v; first=%+v second=%+v", err, first, second)
+	}
+}
+
+func TestMazeTransientBudgetFailureIsNotCached(t *testing.T) {
+	source := mazeTestPart("A1", "N", layoutBBox{-20, -10, 0, 10}, powerLayoutPin{Number: "1", Net: "N", X: 5, Y: 0, Rotation: mazeTestRotation(0)})
+	target := mazeTestPart("B1", "N", layoutBBox{200, -10, 220, 10}, powerLayoutPin{Number: "1", Net: "N", X: 195, Y: 0, Rotation: mazeTestRotation(180)})
+	p := powerLayoutPlan{Placements: []powerLayoutPlacement{source, target}}
+	islands := libIslands(&p)
+	ctx, _ := newSchematicRoutingContext(&SchematicRoutingOptions{MaxExpandedNodes: 1024, MaxReroutes: 1}, nil)
+	ctx.policies = map[string]string{"N": "direct"}
+	ctx.expanded = ctx.usableExpandedNodes()
+	_, err := libMazeRoute(&p, islands[0], islands[1], ctx)
+	var failure *schematicRoutingFailure
+	if !errors.As(err, &failure) || failure.Kind != "relocation-budget-reserved" || len(ctx.cache) != 0 {
+		t.Fatalf("transient failure was not classified or was cached: err=%v cache=%d", err, len(ctx.cache))
+	}
+	ctx.relocation++
+	route, err := libMazeRoute(&p, islands[0], islands[1], ctx)
+	ctx.relocation--
+	if err != nil || len(route) == 0 {
+		t.Fatalf("same geometry was not retried with relocation budget: %v", err)
+	}
+}
+
 func TestLibMazeRouteConnectsToWireTreeMidspan(t *testing.T) {
 	source := mazeTestPart("A1", "N", layoutBBox{-20, 40, 0, 60}, powerLayoutPin{Number: "1", Net: "N", X: 5, Y: 50, Rotation: mazeTestRotation(0)})
 	top := mazeTestPart("B1", "N", layoutBBox{90, 80, 110, 100}, powerLayoutPin{Number: "1", Net: "N", X: 100, Y: 75, Rotation: mazeTestRotation(270)})

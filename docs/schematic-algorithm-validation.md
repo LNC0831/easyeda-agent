@@ -393,6 +393,44 @@ USBC1 输出 `(0,0)`、rotation 180、mirror false，源授权仍为 `[0,180]`�
 `.easyeda/zone-review-clean-validation-20260917/` 与
 `.easyeda/zone-review-core-clean-validation-20260917/`；均未安装 CLI、连接 Web 或 Apply。
 
+## dev.15 P1 五区现场修复与位号闭合障碍回归（2026-09-17）
+
+本轮只使用 Web 版 EasyEDA Pro 3.2.186。CLI、daemon 与两个 Web Connector 均为
+`v1.5.0-dev.15`，目标固定为工程 `475cc0f773ed4a6fb7a02336c8a6a67f` 的 P1
+`fb2fca2fba6d9d07`；完整证据保存在
+`.easyeda/p1-dev15-live-validation-20260917/`。
+
+通用算法先收紧两项数据判据：实测 Designator bbox 改为闭合障碍，导线沿边或角点接触也
+按 `wire-text` 拒绝；maze 失败缓存不再保存 `expanded-node-budget-exhausted`、
+`relocation-budget-reserved` 和 `route-attempt-node-limit` 这三类阶段性预算结果，避免后续
+合法分支复用过期失败。placement、A* edge 与 pin-exit 共用同一位号接触判据，最小回归
+覆盖水平/垂直边界、角点、内部穿越、完全避开及三条缓存分类。当前工作树运行
+`go test ./... -count=1` 与 `git diff --check` 均通过。
+
+固定 P1 五区布局的首个现场候选在受保护队列第 186/188 步被严格门正确拦下：
+`check` 唯一阻塞为 CC2 netport 与 R4 的 GND netflag 可见 bbox 重叠 `1×2 raw`；前 185 步
+虽已落地，但没有续跑、跳步或声称回滚。fresh 回读后从数据层把 CC2 的线树锚点由
+`(75,70)` 左移一个 5-raw 网格到 `(70,70)`，同步更新固定 frame 的 title occupancy，
+重新完成五区纸张规划、固定渲染、Compose 和 188 步 dry-run，再生成全新队列完整执行。
+
+第二个队列一次完成：`188 ok, 0 skipped`，journal SHA-256 为
+`3ea43b3afb19c699f2b7e0bde867398328253a221cf9cf3d43cf5319a6e01c08`。队列内和独立
+fresh 回读均得到 `sch gate --strict verdict:pass`：17 个器件有完整 bbox，layout-lint 与
+17 个 cluster 的 overlap/tight/out-of-sheet 均为 0；marker overlap、floating pin、
+wire-over-pin、reversed flag 均为 0；36 棵物理线树为 0 bridge、0 orphan；官方 DRC
+fatal/error/warn/info 全为 0。`check` 保留 24 个已由物理线岛和逐 pin 网表证明合法的
+无接点内部 X，级别均为 INFO，不阻塞严格门。
+
+独立对账确认 60 条 `ref.pin→net` 电气映射与修改前哈希一致；17 个 primitiveId/位号及
+device、uniqueId、BOM/PCB 标志、供应商和自定义属性的规范化哈希也完全一致。最终再次
+显式 `sch save` 返回 `saved:true`。官方整页导图为
+`.easyeda/p1-dev15-live-validation-20260917/p1-final-official.svg`（169692 bytes，SHA-256
+`e3292ac53389e2354d5478e32a08342228a91ced2305feb3af3b7cedca9cff1d`）及同目录 PNG。
+
+本轮证明固定布局数据能够保留问题、由严格数据门发现并修源后完整 Apply；仍不能把它写成
+“五区默认 200000 节点预算的全量重新求解已普遍解决”。该全量重求解缺口、P2 新一轮现场
+回归、S0–S6/P0–P10 整板验收和 `v1.5.0` 正式发布均不在本节的通过范围内。
+
 ## 明确边界
 
 有界窗口、姿态菜单与预算不是完备搜索；仍可能重复探索局部预算窗口。失败不证明全局无解，

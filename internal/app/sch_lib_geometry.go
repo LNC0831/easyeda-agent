@@ -94,7 +94,7 @@ func libValidatePinExitSpace(p *powerLayoutPlan, stems []libMeasuredStem, segmen
 				// broad label reservation intentionally cannot stand in for actual
 				// text geometry (it includes large known-empty pin columns).
 				for _, box := range other.TextBBoxes {
-					if plSegmentBox(a, b, box) {
+					if plSegmentTouchesBox(a, b, box) {
 						return schObstruction("pin-exit-label", fmt.Errorf("pin-exit-blocked: %s.%s minimum outward segment crosses %s Designator", c.Designator, q.Number, other.Designator), c.Designator, other.Designator)
 					}
 				}
