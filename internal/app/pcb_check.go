@@ -980,12 +980,33 @@ func findParallelCoupling(tracks []pcbTrack, couplingW float64) []pcbCheckFindin
 //  1. side mismatch — a component's designator sits on the OPPOSITE silk layer from
 //     its footprint (component on TOP but its designator on BOTTOM_SILKSCREEN, or
 //     vice-versa). The label ends up on the wrong side of the board.
-//  2. mirror mismatch — the text's mirror flag doesn't match its silk layer. Top
-//     silk must read un-mirrored; bottom silk must be mirrored (so it reads
-//     correctly when the board is viewed from the bottom). Either way wrong = the
-//     text renders backwards.
+//  2. mirror/reverse — the text renders backwards. Only the UNAMBIGUOUS half is
+//     judged here:
 //
-// Free strings (no parent component) only get the mirror check.
+//     - `reverse` (left/right reading) is always a defect, on either silk layer:
+//       it mirrors glyph order regardless of which side the text is on.
+//     - `mirror` on TOP silk is a defect — the top is the reference reading
+//       orientation, so mirroring it can only render backwards.
+//
+//     `mirror` on BOTTOM silk is deliberately NOT judged. The platform's bottom
+//     semantics are unverified and the in-repo sources disagree, so any rule here
+//     would either misreport or contradict our own tooling:
+//
+//     - All seven vendored reference boards (testdata/boards/*.json — JLCEDA
+//       open-source boards plus a shipped user design) carry mirror=false on every
+//       bottom-silk text: 1814 of 1814, attributes and free strings alike. The
+//       rule's original polarity (bottom must be mirrored) fired ~1800 false
+//       ERRORs across them, yet bbclaw ships mirror=true on 10 bottom designators,
+//       so the inverted polarity does not clear them all either.
+//     - `pcb silk-align` (extension/src/actions.ts) deliberately sets
+//       `mirror = (component side == bottom)` on the designators it writes, and
+//       retries WITHOUT mirror/layer when modify rejects them. Judging bottom
+//       mirror either way makes this audit flag the writer's own output.
+//
+//     A false ERROR on a ship gate is worse than a missed cosmetic one, and a text
+//     that is merely mis-positioned is invisible to this check regardless (it only
+//     reads the text's own flags). Re-enable a bottom rule once the platform
+//     semantics are settled against a known-good board.
 func findSilkscreenFlipped(silk []pcbSilkText) []pcbCheckFinding {
 	sideName := func(l int) string {
 		switch l {
@@ -1005,8 +1026,9 @@ func findSilkscreenFlipped(silk []pcbSilkText) []pcbCheckFinding {
 		if label == "" {
 			label = s.ID
 		}
+		compOwned := s.Kind == "attribute" && (s.CompLayer == pcbSideTop || s.CompLayer == pcbSideBottom)
 		// 1. designator on the wrong silk side vs its component.
-		if s.Kind == "attribute" && (s.CompLayer == pcbSideTop || s.CompLayer == pcbSideBottom) {
+		if compOwned {
 			wantSilk := silkTopLayer
 			if s.CompLayer == pcbSideBottom {
 				wantSilk = silkBottomLayer
@@ -1021,21 +1043,18 @@ func findSilkscreenFlipped(silk []pcbSilkText) []pcbCheckFinding {
 				continue
 			}
 		}
-		// 2. mirror/reverse doesn't match the silk layer → text reads backwards.
-		//    Top silk must read un-flipped; bottom silk must be flipped (so it reads
-		//    right viewed from the bottom). Either Mirror or Reverse = flipped.
-		flipped := s.Mirror || s.Reverse
-		wantFlipped := s.Layer == silkBottomLayer
-		if flipped != wantFlipped {
-			state := "mirrored/reversed"
-			if !flipped {
-				state = "un-mirrored"
+		// 2. reverse is always backwards; a mirrored TOP text is too. Bottom-side
+		//    mirror is not judged — see the doc comment above.
+		if s.Reverse || (s.Mirror && s.Layer == silkTopLayer) {
+			reason := "reversed"
+			if s.Mirror {
+				reason = "mirrored"
 			}
 			out = append(out, pcbCheckFinding{
 				Type: "silkscreen-flipped", Level: "ERROR", Layer: s.Layer, Designator: label,
 				Primitives: []string{s.ID}, At: &pcbXY{round2(s.X), round2(s.Y)},
 				Message: fmt.Sprintf("silkscreen text '%s' on the %s silk is %s — it reads backwards (放反)",
-					label, sideName(s.Layer), state) + docRule("11.2", "底层丝印需镜像"),
+					label, sideName(s.Layer), reason) + docRule("11.2", "丝印须清晰可辨"),
 			})
 			continue
 		}

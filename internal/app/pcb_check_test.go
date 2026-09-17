@@ -1,6 +1,8 @@
 package app
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -234,8 +236,8 @@ func TestPcbCheck_TrackOverPad(t *testing.T) {
 }
 
 // Silkscreen orientation: a top-side designator on the bottom silk (side
-// mismatch), a top-silk label that is mirrored (reads backwards), and a correct
-// bottom-side part (bottom silk + mirrored) that must NOT trip.
+// mismatch), a mirrored top-silk label (reads backwards), and correct bottom-side
+// parts that must NOT trip.
 func TestPcbCheck_SilkscreenFlipped(t *testing.T) {
 	// R1 on TOP but its designator got flipped onto the bottom silk → side mismatch.
 	sideMismatch := []pcbSilkText{
@@ -251,16 +253,95 @@ func TestPcbCheck_SilkscreenFlipped(t *testing.T) {
 	if got := countType(analyzePcbCheckFull(nil, nil, nil, nil, backwards, 0), "silkscreen-flipped"); got != 1 {
 		t.Fatalf("mirrored-top = %d, want 1", got)
 	}
-	// Correct states: top part / top silk / un-mirrored, AND a bottom part / bottom
-	// silk / mirrored. Neither is flipped.
+	// Bottom-side mirror is NOT judged — neither polarity is a finding, so the
+	// audit never contradicts `pcb silk-align` (which writes mirror=true on bottom).
+	bottomEither := []pcbSilkText{
+		{ID: "a3", Kind: "attribute", Text: "U3", Layer: 4, Mirror: true, CompID: "c3", CompLayer: 2},
+		{ID: "a4", Kind: "attribute", Text: "U4", Layer: 4, Mirror: false, CompID: "c4", CompLayer: 2},
+	}
+	if got := countType(analyzePcbCheckFull(nil, nil, nil, nil, bottomEither, 0), "silkscreen-flipped"); got != 0 {
+		t.Fatalf("bottom mirror (either polarity) = %d, want 0", got)
+	}
+	// Correct states: top part / top silk; bottom part / bottom silk; free strings on
+	// either side — none mirrored.
 	ok := []pcbSilkText{
 		{ID: "a1", Kind: "attribute", Text: "U1", Layer: 3, Mirror: false, CompID: "c1", CompLayer: 1},
-		{ID: "a2", Kind: "attribute", Text: "U2", Layer: 4, Mirror: true, CompID: "c2", CompLayer: 2},
+		{ID: "a2", Kind: "attribute", Text: "U2", Layer: 4, Mirror: false, CompID: "c2", CompLayer: 2},
 		{ID: "s1", Kind: "string", Text: "LOGO", Layer: 3, Mirror: false},
+		{ID: "s2", Kind: "string", Text: "SN", Layer: 4, Mirror: false},
 	}
 	rep := analyzePcbCheckFull(nil, nil, nil, nil, ok, 0)
 	if got := countType(rep, "silkscreen-flipped"); got != 0 {
 		t.Fatalf("correct silk = %d, want 0 (findings: %+v)", got, rep.Findings)
+	}
+}
+
+// The unambiguous backwards cases: a mirrored TOP text, and a reversed text on
+// either side. Bottom-side mirror is not judged (see the rule's doc comment).
+func TestPcbCheck_SilkMirrorAndReverse(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		s    pcbSilkText
+	}{
+		{"top-mirrored-owned", pcbSilkText{ID: "a1", Kind: "attribute", Key: "Designator", Text: "C23", Layer: 3, Mirror: true, CompID: "c1", CompLayer: 1}},
+		{"top-mirrored-free", pcbSilkText{ID: "s1", Kind: "string", Text: "REV A", Layer: 3, Mirror: true}},
+		{"top-reversed", pcbSilkText{ID: "a2", Kind: "attribute", Key: "Designator", Text: "R9", Layer: 3, Reverse: true, CompID: "c2", CompLayer: 1}},
+		{"bottom-reversed", pcbSilkText{ID: "s2", Kind: "string", Text: "SN", Layer: 4, Reverse: true}},
+	} {
+		rep := analyzePcbCheckFull(nil, nil, nil, nil, []pcbSilkText{tc.s}, 0)
+		if got := countType(rep, "silkscreen-flipped"); got != 1 {
+			t.Fatalf("%s: silkscreen-flipped = %d, want 1 (findings: %+v)", tc.name, got, rep.Findings)
+		}
+	}
+}
+
+// Regression: none of the vendored reference boards may be hit by this rule. Before
+// the fix, requiring mirror=true on bottom silk fired 391/841/582 false ERRORs on
+// the three lckfb boards; the inverted polarity would in turn flag bbclaw's 10
+// bottom designators.
+//
+// The assertion counts only mirror/reverse ERRORs — the rule's third mode (a
+// designator rotated off 0° → WARN) legitimately fires on these shipped boards and
+// is out of scope here.
+//
+// A missing fixture is a FAILURE, not a skip: these are required vendored
+// regression inputs, and skipping would silently turn the coverage into a green
+// no-op (same rationale as the golden-board suite in pcb_layoutscore_golden_test.go).
+func TestPcbCheck_OfficialBoardsNoSilkFalsePositive(t *testing.T) {
+	boards := []string{
+		"lckfb-szpi-esp32s3.json",
+		"lckfb-k230-canmv.json",
+		"lckfb-rk3568-4layer.json",
+		"bbclaw-ai-voice-terminal.json",
+		"lckfb-mipi-3in1-adapter.json",
+	}
+	checked := 0
+	for _, file := range boards {
+		raw, err := os.ReadFile(goldenBoardsDir + "/" + file)
+		if err != nil {
+			t.Fatalf("required reference board %s unreadable: %v — a missing fixture must not turn this regression into a green skip", file, err)
+		}
+		var snap boardSnapshot
+		if err := json.Unmarshal(raw, &snap); err != nil {
+			t.Fatalf("%s: parse fixture: %v", file, err)
+		}
+		if len(snap.Silk) == 0 {
+			t.Fatalf("%s has no silkscreen texts — the fixture stopped exercising this rule", file)
+		}
+		rep := analyzePcbCheckFull(nil, nil, nil, nil, snap.Silk, 0)
+		errs := 0
+		for _, f := range rep.Findings {
+			if f.Type == "silkscreen-flipped" && f.Level == "ERROR" {
+				errs++
+			}
+		}
+		if errs != 0 {
+			t.Fatalf("%s silkscreen-flipped ERRORs = %d, want 0", file, errs)
+		}
+		checked++
+	}
+	if checked != len(boards) {
+		t.Fatalf("checked %d of %d reference boards — the loop did not exercise every fixture", checked, len(boards))
 	}
 }
 
@@ -379,7 +460,7 @@ func TestPcbCheck_SilkDesignatorOrientation(t *testing.T) {
 	}
 }
 
-// A mirrored/reversed top-silk text reads backwards → ERROR.
+// A reversed top-silk text reads backwards → ERROR.
 func TestPcbCheck_SilkReversed(t *testing.T) {
 	silk := []pcbSilkText{
 		{ID: "s1", Kind: "attribute", Key: "Designator", Text: "R9", Layer: silkTopLayer, Reverse: true},

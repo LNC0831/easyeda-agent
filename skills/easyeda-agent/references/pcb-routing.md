@@ -285,7 +285,9 @@ subset; `--dry-run` prints the per-corner plan. Save after placing; delete via
 > --preset bottom-only|top-only|copper-only|silk-only` 或 `--show/--hide`。切当前编辑层用
 > `easyeda pcb layer-set --layer bottom|Inner1|<id>`。**注意**：EasyEDA 无原生画布翻面/镜像视图
 > API，`view-side` 是「层聚焦」近似（切当前层 + 只显示该面层），不是物理翻板；丝印极性仍以
-> `pcb check` 的 silkscreen-flipped 规则（`layer=4` + `mirror=true`）做数据级判定为准。
+> `pcb check` 的 silkscreen-flipped 规则做数据级判定为准——该规则判**位号与元件不同层**、
+> **`reverse`（任一层）**、以及**顶层 `mirror`**。底层 `mirror` 平台语义未确证（仓库 fixture
+> 板多为 `mirror=false`，而 `pcb silk-align` 写 `mirror=true`），两种极性都会误报，故不判。
 
 > **Routing boundary (load-bearing — see `docs/ecosystem-survey.md` §7):** EasyEDA's
 > interactive 布线 menu (single/multi/differential **routing**, stretch, optimize,

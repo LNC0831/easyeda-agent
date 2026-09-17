@@ -739,7 +739,7 @@ func AllActions() []ActionSpec {
 			Domain:      DomainPcb,
 			Phase:       2,
 			NeedsWindow: true,
-			Description: "List every SILKSCREEN TEXT primitive on the active PCB — component designator/value ATTRIBUTES (pcb_PrimitiveAttribute) plus free STRINGS (pcb_PrimitiveString) — each with its silk layer (3=TOP_SILKSCREEN, 4=BOTTOM_SILKSCREEN), mirror flag, text, position, and (for attributes) the parent component's id + side (TOP/BOTTOM). Feeds the `pcb check` silkscreen-orientation rule: top silk must read un-mirrored, bottom silk must be mirrored, and a designator's silk side must match its component's side — a mismatch is a flipped/back-side silkscreen (放反). Read-only.",
+			Description: "List every SILKSCREEN TEXT primitive on the active PCB — component designator/value ATTRIBUTES (pcb_PrimitiveAttribute) plus free STRINGS (pcb_PrimitiveString) — each with its silk layer (3=TOP_SILKSCREEN, 4=BOTTOM_SILKSCREEN), mirror flag, text, position, and (for attributes) the parent component's id + side (TOP/BOTTOM). Feeds the `pcb check` silkscreen-orientation rule, which flags two things: a designator whose silk side doesn't match its component's side (a back-side silkscreen, 放反), and a text that renders backwards — `reverse` on either silk layer, or `mirror` on TOP silk. Bottom-side `mirror` is NOT judged: the platform's bottom semantics are unverified and the in-repo sources disagree (the vendored reference boards ship mirror=false, while pcb.silk.align writes mirror=true), so either polarity would misreport. Read-only.",
 			Outputs:     []string{"texts[].primitiveId", "texts[].kind", "texts[].text", "texts[].layer", "texts[].mirror", "texts[].componentId", "texts[].componentLayer", "texts[].x", "texts[].y", "count"},
 		},
 		{
