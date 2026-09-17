@@ -40,6 +40,7 @@ mined from open-source `eext-*` extensions' real `eda.*` usage:
 | Action | CLI | What | absorb # |
 |---|---|---|---|
 | `schematic.library.get_by_lcsc` | `lib by-lcsc --lcsc C…` | Deterministically resolve LCSC C-numbers → `{libraryUuid, uuid}` (no free-text rank); `notFound` for misses. Companion script `scripts/parts-add.py` writes results back into `standard-parts.json`. | A1 |
+| offline preflight | `lib device validate --spec …` | Validate datasheet identity/page evidence, land-pattern provenance, geometry, duplicate numbers, and exact Symbol-pin ↔ Footprint-pad mapping before `lib device build` performs any write. | library-builder |
 | `pcb.line.create` | `pcb track` | Create a copper track (导线) on a layer between two points (mil, y-up). **Mutates.** | A2 |
 | `pcb.via.create` | `pcb via` | Place a via (过孔) with hole + outer diameter. **Mutates.** | A2 |
 | `pcb.report` | `pcb report` | Read-only design report: per-net length, net-class totals, differential-pair skew, equal-length spread. | A3 |

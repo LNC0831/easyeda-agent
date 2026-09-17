@@ -4,6 +4,7 @@
 
 - Add offline `sch zone-review` ownership diagnostics and run them automatically before `layout-plan --zones`. Reports preserve source hashes and explicit component/pin/net evidence for multi-core hints, non-rail subgraphs detached from the declared core, and rail-only attachment endpoints, while leaving the source JSON and Apply state untouched for AI review.
 - Keep source rotation authorization intact when a reviewed component becomes the zone core. The effective solver permission is narrowed to the measured core angle, preserving the fixed anchor without requiring the AI to rewrite component evidence.
+- Add `lib device validate --spec` as an offline preflight for datasheet-backed library authoring. Complete Device builds now require manufacturer/MPN/package evidence with source pages, a declared land-pattern basis, valid symbol/footprint geometry, and an exact pin-to-pad mapping before any EasyEDA mutation. Route the public Skill through the new PDF-reading workflow and provide a reusable JSON example.
 
 ## [1.5.0-dev.14] — 2026-09-17 (local development only; fresh-session live validation required)
 

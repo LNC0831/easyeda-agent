@@ -105,6 +105,9 @@ Playbook 使用 `version:1`、`meta` 和有序 `steps`。每步只选一种执�
 
 需要自建时按 `lib libraries` 找目标库，再用 `lib device build --spec device.json`
 编排 Symbol、Footprint、可选 3D Model 与 Device；也可分步 create/build/get。
+完整规格先运行 `lib device validate --spec device.json`，它离线核对 PDF 证据、几何字段、
+重复编号以及 symbol pin ↔ footprint pad 集合；通过后 `device build` 会再次执行同一门禁。
+PDF 通读、封装变体消歧和规格格式见 [library-authoring.md](library-authoring.md)。
 资产使用可复用的 `EA_AGENT__<ASSET>` 命名，项目来源写属性或描述。create/build 的
 `verified/partial/rollback` 必须核对；删除要求 UUID、library 和 expected-name 精确匹配。
 

@@ -10,7 +10,7 @@
 
 ## 1. 一句话结论
 
-在 18 个官方/市场 PCB 自动化插件里，easyeda-agent 已 **full/partial 覆盖 8 个 (2 full + 6 partial)**，且覆盖的正是设计主干——放置→布线→自动布局→短线布线→铺铜→netlist/BOM→DRC 重构→外部布线桥 (Freerouting/DSN)——以及底层传输层 (`run-api-gateway` 就是我们连接器架构的「撞型」)。**真正的空白集中在主干之外的四类**:(a) **建库/建符号建封装** authoring 三件套 (我们只会放现成 LCSC 件,零 authoring);(b) **专用铺铜/图形** (net-less 均衡铺铜/thieving、丝印挖孔填充、QR/logo/轮廓导入);(c) **高级布线/信号完整性** (差分对、等长绕线、fanout、线圈、net-length/timing 分析);(d) **3D/STEP 导出 与 BOM 版本 diff**。关键校正:调研中几乎所有「平台墙」都被这些插件**证伪**——diff-pair/fanout/length-match/net-length/teardrop 都可通过「外部算几何 + 写 raw primitive」达成,墙只在交互式菜单 API,不在结果。
+在 18 个官方/市场 PCB 自动化插件里，easyeda-agent 已覆盖设计主干及建库三件套：放置→布线→自动布局→短线布线→铺铜→netlist/BOM→DRC 重构→外部布线桥，以及 Symbol/Footprint/Device/3D 资产创建。建库流程由 Agent 通读 PDF，CLI 对来源页、land-pattern 依据与 pin↔pad 映射做离线硬门。剩余空白主要是专用铺铜/图形、高级布线/信号完整性和 BOM 版本 diff。关键校正:调研中几乎所有「平台墙」都被这些插件**证伪**——diff-pair/fanout/length-match/net-length/teardrop 都可通过「外部算几何 + 写 raw primitive」达成,墙只在交互式菜单 API,不在结果。
 
 ## 2. 覆盖度总表 (按 category)
 
@@ -37,7 +37,7 @@
 | eext-chat-with-ai-kimi | 应用内 Kimi 聊天:设计问答/选中件详情/替代料/netlist 分析 | 🟡partial | 数据 API 全有;唯一缺口=「读选中件→找 pin-兼容替代料」流程,低价低耗 |
 | **library-part** | | | |
 | eext-ai-device-standardization | 元件/BOM 匹配 JLC 标准库并重绑符号/封装 | 🟡partial | search/get_by_lcsc 已包;缺**已放置件 rebind 符号/封装** (`modify` 改不了符号引用) |
-| eext-ai-library-builder | Vision-LLM 读 datasheet→建符号+封装 (BGA/QFN/QFP…) | ⬜none | authoring 盲区 (survey 已标)。`lib_*.create` API 存在;视觉交给 agent |
+| eext-ai-library-builder | Vision-LLM 读 datasheet→建符号+封装 (BGA/QFN/QFP…) | ✅full workflow | Agent 通读 PDF；`lib device validate` 核对页码证据/land pattern/pin-pad；`lib device build` 创建并绑定 Symbol+Footprint+可选 3D。尚未把整份 PDF 上传进扩展 UI，因为宿主 Agent 已负责阅读。 |
 | eext-ai-symbol-builder | 芯片照片→Qwen2.5-VL 提取引脚→画符号到画布 | ⬜none | 同上但只 emit 松散 primitive (无 lib device 包装),不可复用 |
 | **manufacturing-output** | | | |
 | eext-mcad-integration | 板 3D STEP 导出 + 与 FreeCAD/Fusion/SW 双向 live-sync | ⬜none | 零 3D/STEP。live-sync 是交互胶水不吸;但 `get3DFile` 单调用可做 `pcb export-3d` |
@@ -66,7 +66,7 @@
 | 7 | eext-coil-creator | `pcb coil` 子命令:参数化螺旋/多边形线圈,纯数学循环 emit tracks | `pcb_PrimitiveLine.create` (循环;弧形版可选 `pcb_PrimitiveArc`) | 低 |
 | 8 | eext-qrcode-generator | `pcb qrcode`/`silk-graphic`:文本/图 → 丝印图形;同 API 解锁通用 logo/artwork 导入 | `pcb_MathPolygon.convertImageToComplexPolygon` + `pcb_PrimitiveImage.create`/`PrimitiveObject.create` (TOP_SILKSCREEN;核对层 id 3 映射) | 中 |
 | 9 | eext-kirouting-integration | **diff-pair / 等长绕线 / fanout 的「输出模式」**——自研启发式算几何写 raw tracks/vias (引擎/Voronoi/Hungarian 太重,不吸,继续外包 Freerouting) | `pcb_PrimitiveLine.create` + `pcb_PrimitiveVia.create` | 高 (但仅结果模式) |
-| 10 | eext-ai-library-builder + eext-ai-symbol-builder | **建库三件套** authoring:两侧引脚自动布局 + QFN/QFP/BGA/DIP/SOP pad 数学;视觉/datasheet 交给 Claude 原生 | `lib_Symbol.create`/`lib_Footprint.create`/`lib_Device.create` + `sch_PrimitivePin.create`/`sch_PrimitivePolygon.create` (均在 api-index.json) | 高 (新 authoring 域) |
+| 10 | eext-ai-library-builder + eext-ai-symbol-builder | **已吸收**：Agent 通读 PDF，离线证据/映射门禁，Symbol+Footprint+Device+可选 3D 编排、回读与失败回滚 | `lib device validate` + `lib device build`；底层 `lib_*` typed actions | ✅完成（真实新器件仍须现场建库验收） |
 
 ## 4. 已覆盖 — 验证方向正确
 

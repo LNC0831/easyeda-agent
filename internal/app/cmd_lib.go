@@ -24,6 +24,8 @@ type libraryAssetBuildSpec struct {
 	}
 	Model3D    *struct{ Name, Description, File, Unit string } `json:"model3D"`
 	Properties map[string]any
+	Evidence   libraryBuildEvidence
+	PinMapping libraryPinMapping
 }
 
 func resultString(res *actionResult, key string) string {
@@ -396,10 +398,16 @@ func newLibraryModel3DCmd(cfg *appConfig, stdout, stderr io.Writer, window *stri
 		var classification []string
 		var limit int
 		c := &cobra.Command{Use: "search", Short: "Search existing 3D models", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
-			if query == "" { return fmt.Errorf("--query is required") }
+			if query == "" {
+				return fmt.Errorf("--query is required")
+			}
 			p := map[string]any{"query": query, "limit": limit}
-			if libraryUUID != "" { p["libraryUuid"] = libraryUUID }
-			if len(classification) > 0 { p["classification"] = classification }
+			if libraryUUID != "" {
+				p["libraryUuid"] = libraryUUID
+			}
+			if len(classification) > 0 {
+				p["classification"] = classification
+			}
 			return dispatch(cfg, "library.model3d.search", *window, p, stdout, stderr)
 		}}
 		c.Flags().StringVar(&query, "query", "", "model name keyword (required)")
@@ -412,7 +420,9 @@ func newLibraryModel3DCmd(cfg *appConfig, stdout, stderr io.Writer, window *stri
 		var uuid, sourceLibrary, name, scope, libraryUUID string
 		var classification []string
 		c := &cobra.Command{Use: "copy", Short: "Copy an existing 3D model into a writable library", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
-			if uuid == "" || sourceLibrary == "" || name == "" { return fmt.Errorf("--uuid, --source-library and --name are required") }
+			if uuid == "" || sourceLibrary == "" || name == "" {
+				return fmt.Errorf("--uuid, --source-library and --name are required")
+			}
 			p := libraryTargetPayload(scope, libraryUUID, classification)
 			p["uuid"], p["sourceLibraryUuid"], p["name"] = uuid, sourceLibrary, name
 			return dispatch(cfg, "library.model3d.copy", *window, p, stdout, stderr)
@@ -515,20 +525,35 @@ func newLibraryDeviceCmd(cfg *appConfig, stdout, stderr io.Writer, window *strin
 	}
 	{
 		var specPath string
+		c := &cobra.Command{Use: "validate", Short: "Validate a datasheet-backed Device build spec without opening EasyEDA", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+			if specPath == "" {
+				return fmt.Errorf("--spec is required")
+			}
+			spec, err := readLibraryAssetBuildSpec(specPath)
+			if err != nil {
+				return err
+			}
+			summary, err := validateLibraryAssetBuildSpec(&spec)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(stdout).Encode(map[string]any{"ok": true, "result": summary})
+		}}
+		c.Flags().StringVar(&specPath, "spec", "", "datasheet-backed complete Device JSON spec (required)")
+		group.AddCommand(c)
+	}
+	{
+		var specPath string
 		c := &cobra.Command{Use: "build", Short: "Create Symbol + Footprint + optional 3D model and bind one Device", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
 			if specPath == "" {
 				return fmt.Errorf("--spec is required")
 			}
-			data, err := os.ReadFile(specPath)
+			spec, err := readLibraryAssetBuildSpec(specPath)
 			if err != nil {
-				return fmt.Errorf("read --spec: %w", err)
+				return err
 			}
-			var spec libraryAssetBuildSpec
-			if err := json.Unmarshal(data, &spec); err != nil {
-				return fmt.Errorf("parse --spec: %w", err)
-			}
-			if spec.Name == "" || spec.LibraryUUID == "" || spec.Symbol.Name == "" || spec.Footprint.Name == "" || len(spec.Symbol.Geometry) == 0 || len(spec.Footprint.Geometry) == 0 {
-				return fmt.Errorf("spec requires name, libraryUUID, symbol{name,geometry}, and footprint{name,geometry}")
+			if _, err := validateLibraryAssetBuildSpec(&spec); err != nil {
+				return fmt.Errorf("validate --spec: %w", err)
 			}
 			var log bytes.Buffer
 			var symbolUUID, symbolName, footprintUUID, footprintName, modelUUID, modelName string
@@ -643,11 +668,19 @@ func newLibraryDeviceCmd(cfg *appConfig, stdout, stderr io.Writer, window *strin
 		var uuid, libraryUUID, expectedName, modelUUID, modelLibrary string
 		var clear bool
 		c := &cobra.Command{Use: "model3d", Short: "Bind, replace, or clear the 3D model on an existing Device", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
-			if uuid == "" || libraryUUID == "" || expectedName == "" { return fmt.Errorf("--uuid, --library and --expected-name are required") }
-			if clear && (modelUUID != "" || modelLibrary != "") { return fmt.Errorf("--clear cannot be combined with model flags") }
-			if !clear && (modelUUID == "" || modelLibrary == "") { return fmt.Errorf("--model3d-uuid and --model3d-library are required unless --clear is used") }
+			if uuid == "" || libraryUUID == "" || expectedName == "" {
+				return fmt.Errorf("--uuid, --library and --expected-name are required")
+			}
+			if clear && (modelUUID != "" || modelLibrary != "") {
+				return fmt.Errorf("--clear cannot be combined with model flags")
+			}
+			if !clear && (modelUUID == "" || modelLibrary == "") {
+				return fmt.Errorf("--model3d-uuid and --model3d-library are required unless --clear is used")
+			}
 			p := map[string]any{"uuid": uuid, "libraryUuid": libraryUUID, "expectedName": expectedName, "clear": clear}
-			if !clear { p["model3D"] = map[string]any{"uuid": modelUUID, "libraryUuid": modelLibrary} }
+			if !clear {
+				p["model3D"] = map[string]any{"uuid": modelUUID, "libraryUuid": modelLibrary}
+			}
 			return dispatch(cfg, "library.device.set_model3d", *window, p, stdout, stderr)
 		}}
 		c.Flags().StringVar(&uuid, "uuid", "", "Device UUID (required)")
