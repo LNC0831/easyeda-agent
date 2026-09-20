@@ -165,6 +165,13 @@ easyeda doc switch "<doc-name-or-uuid>" --project "<project>"
   当次运行内即可注册，`easyeda update --check --exit-code` 返回 `READY`。这不是修复，
   其他客户端版本是否受影响未验证。
 
+### 连接正常，但 `block-apply` 的第一个 place 就 “connector did not respond”
+
+这不是连接故障，不要去重启 daemon 或重装连接器：`health` 正常、其他读命令也正常时，
+多半是器件 uuid 不属于当前站点。国际版（easyeda.com）与国内版（lceda.cn）系统库
+libraryUuid 相同但器件 uuid 不同，平台对未知 uuid 不回执，表现成超时。处理办法见
+[part-selection.md 的「站点差异：deviceUuid 必须按当前版本重解析」](part-selection.md#站点差异deviceuuid-必须按当前版本重解析)。
+
 ## 上下文与缓存
 
 `windowId` 会随重连变化，不作为项目或文档的持久身份。优先用项目和文档 UUID 路由。
