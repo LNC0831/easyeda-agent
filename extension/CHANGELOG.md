@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- Bootstrap the Connector when EasyEDA evaluates its entry bundle without dispatching `activate()`. Keep one versioned transport controller on the host's shared per-extension `eda` object so repeated bundle evaluations delegate `start`, `stop`, `reconnect`, and status reads instead of registering duplicate sockets. `deactivate()` stops and releases that controller for a subsequent reload. Verified on macOS EasyEDA 3.2.203 with an official 1.5.2 cold-start baseline that did not connect, followed by import-time and fresh-process bootstrap registrations where `activateObserved=false`; this does not establish the behavior of Windows 3.2.149 or a startup path that never evaluates the bundle.
+
 ## [1.5.2] — 2026-09-20
 
 - Add typed `pcb.config.get/set` and `pcb config get/clearance/track/via/bind` for parameterized PCB design rules: mil/mm conversion, Track-to-Track clearance, named track rules, via diameter bounds, and class/member Track assignments. Preserve unrelated settings, preview exact changes, detect source drift, and report unverified writes as partial failures. Reuse full-rule rollback/readback and accept config exports for restore. Real Web 3.2.203 fixtures cover the 260919 exam settings offline; live save/reload and the fixed ESP32 end-to-end regression remain pending.

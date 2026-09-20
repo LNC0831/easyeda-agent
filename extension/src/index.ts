@@ -12,13 +12,20 @@
 
 import * as extensionConfig from '../extension.json';
 import {
+	bootstrapFromModuleLoad,
 	getConnectionStatus,
 	reconnect as transportReconnect,
 	start as transportStart,
 	stop as transportStop,
+	deactivate as transportDeactivate,
 } from './transport';
 
 const STORAGE_KEY_AUTO_CONNECT = 'autoConnectEnabled';
+
+// EasyEDA can evaluate a user-extension bundle without dispatching an
+// activation event. Start from module scope as well; transport.start() keeps
+// the normal activate() path idempotent.
+bootstrapFromModuleLoad();
 
 // ─── Lifecycle ────────────────────────────────────────────────────────
 
@@ -30,14 +37,14 @@ const STORAGE_KEY_AUTO_CONNECT = 'autoConnectEnabled';
  */
 // eslint-disable-next-line unused-imports/no-unused-vars
 export function activate(status?: 'onStartupFinished', arg?: string): void {
-	transportStart();
+	transportStart('activate');
 }
 
 /**
  * Extension deactivation: tear down the connection without showing a toast.
  */
 export function deactivate(): void {
-	transportStop(false);
+	transportDeactivate();
 }
 
 // ─── Menu actions ─────────────────────────────────────────────────────
