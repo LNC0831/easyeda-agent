@@ -31,7 +31,6 @@ import (
 	"math"
 	"sort"
 	"strings"
-	"time"
 )
 
 // zaaPinSnap 是一只 sweep 前已连接 pin 的快照:断言②的基准 + 回滚的原料。
@@ -491,16 +490,6 @@ func zaaBuildExec(out *zoneArrangeOut, scene *zaScene, opts partitionOpts) ([]za
 	return execs, sweepSet, nil
 }
 
-// zaaRetry:平台会「随机吃掉一个连接/短暂不响应」(block-apply 真机备忘),
-// 单次失败先歇口气重试一次,再失败才算数。
-func zaaRetry(op func() error) error {
-	if err := op(); err == nil {
-		return nil
-	}
-	time.Sleep(2 * time.Second)
-	return op()
-}
-
 func zaaPinMidpoint(pins []layoutPin) (float64, float64) {
 	if len(pins) == 0 {
 		return 0, 0
@@ -683,11 +672,11 @@ func runZoneArrangeApply(cfg *appConfig, win, docUUID string, out *zoneArrangeOu
 			if t.Offset > 0 {
 				payload["offset"] = t.Offset
 			}
-			if err := zaaRetry(func() error {
-				_, e := requestAutolayoutAction(cfg, "schematic.power.connect_pin", win, payload, docUUID, "zone-arrange repair")
-				return e
-			}); err != nil {
-				fmt.Fprintf(stderr, "  ⚠ 修复 %s 失败:%v\n", key, err)
+			// A failed write may still land later (#206/#208). Stop this run,
+			// including the outer repair rounds; rollback wording is not proof
+			// that the host promise was cancelled or the page is clean.
+			if _, err := requestAutolayoutAction(cfg, "schematic.power.connect_pin", win, payload, docUUID, "zone-arrange repair"); err != nil {
+				return fmt.Errorf("修复 %s 失败，写入状态未确认；已停止后续修复且未重试，请回读后重新计划:%w", key, err)
 			}
 		}
 	}

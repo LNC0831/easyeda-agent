@@ -347,7 +347,7 @@ func moveKernelFormatDeficits(defs []movePinDeficit) []string {
 // docUUID 是目标页。
 func schMoveKernel(cfg *appConfig, window, docUUID string, items []moveItem, opts moveKernelOpts) (*moveReport, error) {
 	if opts.RetryDelay == 0 {
-		opts.RetryDelay = 2 * time.Second // zaaRetry 同源:平台随机吃掉一个连接,歇口气再试一次
+		opts.RetryDelay = 2 * time.Second // 仅在内核的状态核验允许重试时使用
 	}
 	stderr := opts.Stderr
 	if stderr == nil {

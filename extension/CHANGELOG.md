@@ -1,8 +1,15 @@
 # Changelog
 
-## [Unreleased]
+## [1.5.2] — 2026-09-20
 
 - Add typed `pcb.config.get/set` and `pcb config get/clearance/track/via/bind` for parameterized PCB design rules: mil/mm conversion, Track-to-Track clearance, named track rules, via diameter bounds, and class/member Track assignments. Preserve unrelated settings, preview exact changes, detect source drift, and report unverified writes as partial failures. Reuse full-rule rollback/readback and accept config exports for restore. Real Web 3.2.203 fixtures cover the 260919 exam settings offline; live save/reload and the fixed ESP32 end-to-end regression remain pending.
+
+- Accept English “Confirm Importing changes information” / “Apply Changes” during typed PCB import, normalize whitespace/case, and retain exact button matching (#223). CLI diagnostics stop on unconfirmed import instead of directing an Agent to edit the project manually.
+- Document the V3.2 extension Config/Enabled permission controls and reported cross-version installation/cold-start workarounds (#222). The 3.2.149 cold-start defect (#221) remains unresolved; module bootstrap proposal #219 is not included.
+- Centralize long-read budgets at the CLI HTTP boundary: document open receives a 30s daemon window and includePins reads receive 150s, plus the existing 2s HTTP response grace. Explicit shorter diagnostic deadlines and larger caller budgets remain intact (#207, #214). Verify the live target UUID after an open error before failing the document guard.
+- Stop zone-arrange repair immediately on a failed connect_pin write, removing both unconditional replay and later repair-round replay (#206). This does not cancel late host promises or resolve the separate late-write cleanup issue #208.
+- Refocus the Skill on parameterized, source-attributed examples and typed-only project operations; include the existing main-branch workflow and PCB configuration work in this release.
+- Validation boundary: automated Go/connector/lint/Skill/release checks are run for this patch. No EDA window is connected on the release host, so the fixed ESP32 end-to-end regression and fresh-connector live import/save/reload verification remain incomplete. Do not treat this release as a completed board acceptance.
 
 ## [1.5.1] — 2026-09-17
 

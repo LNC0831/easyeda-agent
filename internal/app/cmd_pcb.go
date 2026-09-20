@@ -490,7 +490,7 @@ write that resets them. Disable with --no-sync-designators.`,
 				// 然后在用户手动点击后原样复现问题。
 				landed := imported && confirmState == "applied"
 				if imported && !landed {
-					fmt.Fprintf(stderr, "⚠ import resolved but the apply was NOT confirmed (confirm=%s) — if you click 应用修改 by hand, run `easyeda pcb sync-attrs` and `easyeda pcb sync-designators` afterwards\n", confirmState)
+					fmt.Fprintf(stderr, "⚠ import resolved but the apply was NOT confirmed (confirm=%s) — expected 应用修改 / Apply Changes; stop and inspect the dialog/readback, then fix the typed import handler before retrying\n", confirmState)
 				}
 				// attrs 在前、位号在后：attrs_backfill 的 Designator 键泄漏 bug 已在
 				// 连接器根治，但位号回填殿后仍是第二道防线——任何整包 otherProperty

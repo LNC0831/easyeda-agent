@@ -119,6 +119,13 @@ Web 编辑器并核对新窗口/运行版本。用户指定 Web 时绝不改开�
 “允许外部交互”。可使用现有浏览器或桌面工具完成已授权的打开操作；只有登录、权限
 或界面操作确实无法代办时才请用户介入，不因连接失败擅自换到另一个宿主。
 
+V3.2 桌面版的权限入口：**高级 → 扩展管理器 → 已安装 → 选中连接器**。状态按钮的
+`Enabled` / `Disabled` 表示**当前状态**（点击切换），不是动作；只有处于 `Enabled` 时才显示
+`Config` 页签，“允许外部交互 / Allow interactive with external”和“Show at header menu”
+都在该页签。未开启外部交互时平台的 `sys_WebSocket.register()` 直接抛错，连接器侧只表现为
+“Daemon not found”，daemon 看不到任何连接尝试；此时先核对权限，不要重启 daemon。
+Online 与 Half Offline 模式的扩展存储互不共用，切换运行模式后需在新模式下重新导入并授权。
+
 非开发环境在单独终端运行：
 
 ```bash
@@ -142,6 +149,21 @@ easyeda doc switch "<doc-name-or-uuid>" --project "<project>"
   评估当前步骤是否依赖缺失能力，并记录实际运行版本。
 - 写操作使用 `--project` 和 `--doc`，由 CLI 在派发前实时确认目标文档。没有独立的
   `easyeda context` 命令；`health` 显示连接状态，`doc ls/switch` 读取/切换实时文档。
+
+### 扩展已启用、权限已开，但始终没有连接尝试
+
+以下两种情况 daemon 侧都完全不可见（`windows` 为空、无 `connector connected` 日志），
+`health` 无法区分，需要在编辑器一侧判断：
+
+- **跨大版本导入残留**：在 2.2.x 客户端导入过本连接器（`engines.eda` 为 `~3.2.0`）后再升级到
+  3.2.x，可能留下只有扩展索引记录、没有文件内容的安装：扩展列表里可见、状态也能切换，但
+  永远不加载。在扩展管理器卸载该项，完全退出并重开 EasyEDA，再重新导入 `.eext`。
+- **重启后不自启（#221，根因未明）**：国际版桌面客户端 3.2.149（Half Offline 与 Full Online
+  均复现）上，侧载的连接器只在“导入当次”的运行期间工作；EasyEDA 重启后不再 activate，
+  顶部菜单栏里也看不到 `EDA Agent`。当前只有规避手段：每次启动 EasyEDA 后重新导入同一个
+  `.eext`。覆盖导入会保留外部交互设置，但状态可能变为 `Disabled`，需点回 `Enabled`；
+  当次运行内即可注册，`easyeda update --check --exit-code` 返回 `READY`。这不是修复，
+  其他客户端版本是否受影响未验证。
 
 ## 上下文与缓存
 
@@ -196,3 +218,12 @@ health、journal 和日志。多个真实工程/窗口可以同时存在；要�
 如果总表与当前 PCB 元数据都不可读，但 `document.current` 的结果与响应上下文
 一致确认同一工程、同一图页 UUID 和类型，可用这个精确 UUID 作为 `--doc`；
 CLI 直接验证该实时身份，不依赖名称枚举。不能将未经回读确认的 UUID 或旧 health 缓存当证据。
+
+### 读取预算与未知写入状态
+
+CLI 在统一派发入口为 `document.open` / `schematic.page.open` 提供至少 30 秒的 daemon 等待窗口，
+为 `schematic.components.list` 的 `includePins:true` 提供至少 150 秒；HTTP 预算另含现有 2 秒响应宽限。
+这些预算覆盖普通命令、布局与 Apply 调用，不改变明确小于默认 20 秒的诊断请求。
+预算增加不代表解决宿主节流，也不保证迟到写入取消。打开文档报错后，`--doc` 会只读核实目标 UUID；
+不能确认目标时仍失败。zone-arrange 修复连接失败后立即停止，不因超时或回滚文案重发写入；
+先回读连接、图元和保存状态，再从参数化源数据重新计划。

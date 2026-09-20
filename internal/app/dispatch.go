@@ -644,13 +644,14 @@ func ensureActiveDoc(cfg *appConfig, window string) error {
 		return nil
 	}
 	for i := 0; i < 6; i++ {
-		if _, oerr := requestAction(cfg, "document.open", rw, map[string]any{"uuid": target.UUID}); oerr != nil {
-			return fmt.Errorf("--doc guard: open %s: %w", target.Name, oerr)
-		}
+		_, openErr := requestAction(cfg, "document.open", rw, map[string]any{"uuid": target.UUID})
 		time.Sleep(1200 * time.Millisecond)
 		cur, cerr := requestAction(cfg, "document.current", rw, nil)
 		if cerr == nil && cur.Context != nil && cur.Context.DocumentUUID == target.UUID {
 			return nil
+		}
+		if openErr != nil {
+			return fmt.Errorf("--doc guard: open %s: %w; target UUID not confirmed by readback (read error: %v)", target.Name, openErr, cerr)
 		}
 	}
 	return fmt.Errorf("--doc %q: could not confirm it is the active page after retries — refusing to run a mutating action on the wrong page", cfg.doc)
@@ -828,7 +829,7 @@ func postAction(cfg *appConfig, action, window string, payload any, timeout time
 	if timeout <= 0 {
 		timeout = defaultActionTimeout
 	}
-	timeout = schematicIdentityReadTimeout(action, payload, timeout)
+	timeout = effectiveReadTimeout(action, payload, timeout)
 	actionTimeout := timeout
 	// Schematic mutation guards take fresh geometry before AND after the write.
 	// Keep the previous action budget plus bounded read budgets; do not steal the
