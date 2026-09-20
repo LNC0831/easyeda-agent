@@ -1188,6 +1188,13 @@ func AllActions() []ActionSpec {
 			Outputs:     []string{"ruleConfiguration", "classes", "netRules", "configurationName"},
 		},
 		{
+			Name: "pcb.net.color.set", Domain: DomainPcb, Phase: 2, NeedsWindow: true, Mutates: true,
+			Description: "Set one existing net's RGB color from #RRGGBB, preserving the normalized alpha read from pcb_Net.getNetColor. dryRun returns before/requested; writes are read back and any failure or mismatch carries partial:true. Does not alter net class membership or routing.",
+			Inputs:      []string{"net", "color (#RRGGBB)", "dryRun optional"},
+			Outputs:     []string{"net", "before", "requested", "actual", "verified", "partial", "written/writeError/readbackError optional"},
+			VerifyWith:  []string{"pcb.nets.list"},
+		},
+		{
 			Name: "pcb.config.set", Domain: DomainPcb, Phase: 2, NeedsWindow: true, Mutates: true,
 			Description: "Patch freshly read PCB rules, preserving unspecified fields: clearance edits Track-to-Track cells only; track updates existing layer tables or clones copyFrom into a new non-default rule; via updates diameter bounds; bind assigns a named track rule to an existing class and every member. Converts mil/mm into observed storage units, rejects unknown schemas and invalid ranges before writing. dryRun previews before/requested/changes. Re-reads before writing to detect concurrent changes; writes through the full rules writer with rollback and exact readback. Unverified outcomes carry partial:true. Save/reload/get is still required for persistence.",
 			Inputs:      []string{"kind (clearance|track|via|bind)", "unit optional (mil default|mm)", "name (for clearance/track/via)", "trackToTrack (clearance)", "min/default/max optional (track; at least one)", "copyFrom optional (required for a new track rule)", "minOuter/defaultOuter/maxOuter/minHole/defaultHole/maxHole optional (via; at least one)", "netClass/trackRule (bind)", "dryRun optional"},

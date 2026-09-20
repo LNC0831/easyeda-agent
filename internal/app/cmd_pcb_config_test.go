@@ -18,6 +18,7 @@ func TestPcbConfigTypedCommands(t *testing.T) {
 		payload map[string]any
 	}{
 		{[]string{"get"}, "pcb.config.get", nil},
+		{[]string{"net-color", "--net", "+5V", "--color", "#FF8000", "--dry-run"}, "pcb.net.color.set", map[string]any{"net": "+5V", "color": "#FF8000", "dryRun": true}},
 		{[]string{"clearance", "--name", "copperThickness1oz", "--track-to-track", "6", "--dry-run"}, "pcb.config.set", map[string]any{"kind": "clearance", "name": "copperThickness1oz", "trackToTrack": float64(6), "unit": "mil", "dryRun": true}},
 		{[]string{"track", "--name", "PWR", "--copy-from", "copperThickness1oz", "--min", "8", "--default", "20"}, "pcb.config.set", map[string]any{"kind": "track", "name": "PWR", "copyFrom": "copperThickness1oz", "min": float64(8), "default": float64(20), "unit": "mil", "dryRun": false}},
 		{[]string{"via", "--name", "viaSize", "--min-outer", "0.6096", "--min-hole", "0.3048", "--unit", "mm"}, "pcb.config.set", map[string]any{"kind": "via", "name": "viaSize", "minOuter": 0.6096, "minHole": 0.3048, "unit": "mm", "dryRun": false}},
@@ -62,6 +63,7 @@ func TestPcbConfigRejectsBadCLIInputWithoutDispatch(t *testing.T) {
 		{"track", "--name", "x", "--min", "+Inf"}, {"track", "--name", "x", "--min", "0"},
 		{"via", "--name", "viaSize", "--min-hole", "-1"}, {"clearance", "--name", "x", "--track-to-track", "6", "--unit", "inch"},
 		{"bind", "--class", "PWR_Class"}, {"bind", "--class", " ", "--track-rule", "PWR"},
+		{"net-color", "--net", "+5V", "--color", "red"}, {"net-color", "--net", "+5V", "--color", "#FFF"},
 	} {
 		cfg, captured, cleanup := newCapturingDaemon(t)
 		var out bytes.Buffer

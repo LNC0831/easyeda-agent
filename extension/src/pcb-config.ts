@@ -19,6 +19,21 @@ const positive = (v: unknown, field: string): number => {
 };
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
+/** Host mm/raw conversions may shift the last IEEE-754 bits. This is NOT a
+ * design tolerance: only relative machine roundoff is allowed, even near zero.
+ * All keys, arrays, units and nonnumeric fields must still match exactly. */
+export function pcbRulesEqual(a: unknown, b: unknown): boolean {
+	if (typeof a === 'number' && typeof b === 'number') {
+		return Number.isFinite(a) && Number.isFinite(b)
+			&& (a === b || Math.abs(a - b) <= 8 * Number.EPSILON * Math.max(Math.abs(a), Math.abs(b)));
+	}
+	if (a === b) return true;
+	if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
+	if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((v, i) => pcbRulesEqual(v, b[i]));
+	const keys = Object.keys(a);
+	return keys.length === Object.keys(b).length && keys.every(k => Object.hasOwn(b, k) && pcbRulesEqual((a as Obj)[k], (b as Obj)[k]));
+}
+
 // Web 3.2.203 reads {name, config}, but overwrite accepts only bare config.
 // Older hosts may already return the bare object. Never unwrap malformed data.
 export function barePcbRuleConfiguration(value: unknown): Obj | null {
@@ -50,7 +65,8 @@ export function planPcbConfig(before: Obj, payload: Obj): { ruleConfiguration: O
 	const group = (section: string, category: string): Obj => object(own(object(own(ruleConfiguration, section), section), category), `${section}.${category}`);
 	const change = (target: Obj | any[], key: string | number, value: any, path: string, unit?: string) => {
 		const old = (target as Obj)[key];
-		if (exactJSON(old) !== exactJSON(value)) changes.push({ path, before: old ?? null, after: value, ...(unit ? { unit } : {}) });
+		if (pcbRulesEqual(old, value)) return;
+		changes.push({ path, before: old ?? null, after: value, ...(unit ? { unit } : {}) });
 		(target as Obj)[key] = value;
 	};
 	const convert = (v: unknown, rule: Obj, field: string): number => {

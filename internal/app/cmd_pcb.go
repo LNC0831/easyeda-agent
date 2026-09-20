@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -34,6 +35,23 @@ func runExternalRouter(ctx context.Context, command string, stderr io.Writer) er
 	cmd.Stdout = stderr
 	cmd.Stderr = stderr
 	return cmd.Run()
+}
+
+func checkPcbStackupResponse(data []byte) error {
+	var response struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			Verified bool `json:"verified"`
+			Partial  bool `json:"partial"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return fmt.Errorf("decode PCB stackup readback: %w", err)
+	}
+	if !response.OK || !response.Result.Verified || response.Result.Partial {
+		return fmt.Errorf("PCB stackup was not fully applied; inspect written and actual layer fields before retrying")
+	}
+	return nil
 }
 
 // pcbClearScopes is the canonical set of `pcb clear --only` values, mirrored in
@@ -3530,7 +3548,15 @@ current stackup with 'pcb layers' (copperLayerCount + each layer's type).`,
 					if len(payload) == 0 {
 						return fmt.Errorf("nothing to set — use --layers and/or --plane/--signal (ids from `easyeda pcb layers`)")
 					}
-					return dispatch(cfg, "pcb.stackup.set", window, payload, stdout, stderr)
+					var response bytes.Buffer
+					err := dispatch(cfg, "pcb.stackup.set", window, payload, &response, stderr)
+					if _, writeErr := stdout.Write(response.Bytes()); writeErr != nil {
+						return writeErr
+					}
+					if err != nil {
+						return err
+					}
+					return checkPcbStackupResponse(response.Bytes())
 				},
 			}
 			c.Flags().IntVar(&layers, "layers", 0, "copper layer count (2|4|6|…|32)")

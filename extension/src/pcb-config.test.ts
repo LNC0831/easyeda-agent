@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import fixture from './testdata/pcb-config-web-3.2.203.json';
-import { planPcbConfig } from './pcb-config';
+import { pcbRulesEqual, planPcbConfig } from './pcb-config';
 import { runAction } from './actions';
 
 const fresh = (): any => structuredClone(fixture);
@@ -115,6 +115,10 @@ async function withHost(run: (host: any) => Promise<void>) {
 		overwriteCurrentRuleConfiguration: async (rules: any) => {
 			host.writes++;
 			if (!host.drop) state.ruleConfiguration = structuredClone(rules);
+			if (host.roundoff || host.corrupt) {
+				const data = state.ruleConfiguration.Spacing['Safe Spacing'].copperThickness1oz.tables['1'].content;
+				data[0][0] -= host.corrupt ? 1e-9 : Number.EPSILON * data[0][0];
+			}
 			return true;
 		},
 		overwriteNetRules: async (rules: any) => {
@@ -164,3 +168,22 @@ test('failed net-rule write rolls back and stays unsuccessful', async () => with
 	assert.equal(result?.partial, true); assert.equal(result?.verified, false); assert.equal(result?.rolledBack, true);
 	assert.deepEqual((await runAction('pcb.config.get', {})).result, before);
 }));
+
+test('live host roundoff is accepted but missing fields, unit changes and real numeric drift fail', async () => {
+	assert.equal(pcbRulesEqual({ value: 0.1759966 }, { value: 0.17599659999999998 }), true);
+	for (const [a, b] of [[0, 1e-30], [1, 1 + 1e-12], [NaN, NaN], [null, 0], [{ value: 1 }, {}], [{ unit: 'mil' }, { unit: 'mm' }], [[1, 2], [2, 1]]]) {
+		assert.equal(pcbRulesEqual(a, b), false);
+	}
+	for (const mode of ['roundoff', 'corrupt']) await withHost(async host => {
+		host[mode] = true;
+		const payload = { kind: 'clearance', name: 'copperThickness1oz', trackToTrack: 7 };
+		const result = (await runAction('pcb.config.set', payload)).result;
+		assert.equal(result?.verified, mode === 'roundoff');
+		assert.equal(result?.partial, mode !== 'roundoff');
+		if (mode === 'roundoff') {
+			const writes = host.writes;
+			assert.equal((await runAction('pcb.config.set', payload)).result?.changed, false);
+			assert.equal(host.writes, writes);
+		}
+	});
+});

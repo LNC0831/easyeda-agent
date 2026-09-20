@@ -8,7 +8,8 @@
 import { type BeautifyOptions, runBeautify } from './beautify';
 import { armDeadline } from './deadlines';
 import { exactJSON, preservedInstance } from './preserve-instance';
-import { barePcbRuleConfiguration, planPcbConfig } from './pcb-config';
+import { barePcbRuleConfiguration, pcbRulesEqual, planPcbConfig } from './pcb-config';
+import { pcbNetColorSet } from './pcb-net-color';
 import { documentTypeLabel, readResponseContext } from './eda-context';
 import { readProjectFootprintSourceArchive } from './native-footprint-source';
 import {
@@ -7271,8 +7272,10 @@ const STACKUP_LAYER_TYPE: Record<string, string> = {
 	power: 'PLANE', ground: 'PLANE', gnd: 'PLANE',
 };
 
-const pcbStackupSet: Handler = async (payload) => {
+export const pcbStackupSet: Handler = async (payload) => {
 	const count = optionalNumber(payload, 'count');
+	const beforeLayers = await eda.pcb_Layer.getAllLayers();
+	const beforeCount = await eda.pcb_Layer.getTheNumberOfCopperLayers();
 	let setCount: boolean | null = null;
 	if (count != null) {
 		const allowed = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32];
@@ -7280,7 +7283,9 @@ const pcbStackupSet: Handler = async (payload) => {
 			throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, `count must be an even number 2..32, got ${count}`);
 		}
 		try {
-			setCount = await eda.pcb_Layer.setTheNumberOfCopperLayers(count as 2 | 4 | 6 | 8 | 10 | 12 | 14 | 16);
+			if (beforeCount !== count) {
+				setCount = await eda.pcb_Layer.setTheNumberOfCopperLayers(count as 2 | 4 | 6 | 8 | 10 | 12 | 14 | 16);
+			}
 		}
 		catch (err) {
 			throw edaError(err, `Failed to set copper layer count to ${count}.`);
@@ -7311,20 +7316,43 @@ const pcbStackupSet: Handler = async (payload) => {
 			if (typeof s.name === 'string') {
 				prop.name = s.name;
 			}
-			let ok: boolean;
+			const before = beforeLayers.find(layer => Number(layer.id) === id);
+			const alreadyMatches = (!prop.type || before?.type === prop.type) && (!prop.name || before?.name === prop.name);
+			let written: boolean | null = null;
 			try {
-				ok = await eda.pcb_Layer.modifyLayer(id as unknown as TPCB_LayersInTheSelectable, prop as { type?: TPCB_LayerTypesOfInnerLayer; name?: string });
+				if (!alreadyMatches) {
+					written = await eda.pcb_Layer.modifyLayer(id as unknown as TPCB_LayersInTheSelectable, prop as { type?: TPCB_LayerTypesOfInnerLayer; name?: string });
+				}
 			}
 			catch (err) {
 				throw edaError(err, `Failed to modify layer ${id} (only inner layers accept a type change).`);
 			}
-			modified.push({ layer: id, ok, ...prop });
+			modified.push({ layer: id, before: before ?? null, written, ...prop });
 		}
 	}
 
 	const allLayers = await eda.pcb_Layer.getAllLayers();
 	const copperLayerCount = await eda.pcb_Layer.getTheNumberOfCopperLayers();
-	return { result: { copperLayerCount, setCount, modified, layers: allLayers } };
+	const countVerified = count == null || copperLayerCount === count;
+	for (const item of modified) {
+		const actual = allLayers.find(layer => Number(layer.id) === item.layer) ?? null;
+		item.actual = actual;
+		item.verified = !!actual && (item.type == null || actual.type === item.type) && (item.name == null || actual.name === item.name);
+		item.changed = !!actual && !!item.before && (actual.type !== (item.before as any).type || actual.name !== (item.before as any).name);
+	}
+	const layersVerified = modified.every(item => item.verified === true);
+	const verified = countVerified && layersVerified;
+	const changed = copperLayerCount !== beforeCount || modified.some(item => item.changed === true);
+	const partial = changed && !verified;
+	return {
+		result: {
+			before: { copperLayerCount: beforeCount, layers: beforeLayers },
+			requested: { ...(count == null ? {} : { copperLayerCount: count }), ...(Array.isArray(layers) ? { layers } : {}) },
+			copperLayerCount, setCount, modified, layers: allLayers,
+			countVerified, layersVerified, changed, verified, partial,
+		},
+		...(verified ? {} : { warnings: ['PCB stackup was not fully applied; inspect each layer written/actual field before continuing.'] }),
+	};
 };
 
 // pcb.silk.align — reposition every component's DESIGNATOR silkscreen to a clean,
@@ -10727,7 +10755,7 @@ async function writePcbRules(payload: Payload, expected?: Record<string, unknown
 		}
 		const finalReadback = await readActual();
 		const rolledBack = !finalReadback.error && !!finalReadback.actual
-			&& exactJSON(finalReadback.actual.ruleConfiguration) === exactJSON(beforeRules)
+			&& pcbRulesEqual(finalReadback.actual.ruleConfiguration, beforeRules)
 			&& (netRules === undefined || exactJSON(finalReadback.actual.netRules) === exactJSON(beforeNetRules));
 		return { rollbackRulesWritten, rollbackNetRulesWritten, rollbackErrors, rolledBack, finalReadback };
 	};
@@ -10753,7 +10781,7 @@ async function writePcbRules(payload: Payload, expected?: Record<string, unknown
 	if (!rulesWritten) {
 		const readback = await readActual();
 		const changed = !!readback.actual
-			&& exactJSON(readback.actual.ruleConfiguration) !== exactJSON(beforeRules);
+			&& !pcbRulesEqual(readback.actual.ruleConfiguration, beforeRules);
 		return {
 			result: {
 				partial: changed || !!readback.error, writeFailed: true, verified: false,
@@ -10797,7 +10825,7 @@ async function writePcbRules(payload: Payload, expected?: Record<string, unknown
 			warnings: ['PCB rules were written, but final readback failed; the applied state is unavailable.'],
 		};
 	}
-	const ruleConfigurationVerified = exactJSON(readback.actual.ruleConfiguration) === exactJSON(ruleConfiguration);
+	const ruleConfigurationVerified = pcbRulesEqual(readback.actual.ruleConfiguration, ruleConfiguration);
 	const netRulesVerified = netRules === undefined || exactJSON(readback.actual.netRules) === exactJSON(netRules);
 	return {
 		result: {
@@ -10807,7 +10835,7 @@ async function writePcbRules(payload: Payload, expected?: Record<string, unknown
 			actual: readback.actual,
 		},
 		...((rulesWritten && netRulesWritten && ruleConfigurationVerified && netRulesVerified) ? {} : {
-			warnings: ['EasyEDA reported both writes successful, but exact readback differs; inspect actual before continuing.'],
+			warnings: ['EasyEDA reported both writes successful, but readback differs beyond machine roundoff; inspect actual before continuing.'],
 		}),
 	};
 }
@@ -12741,6 +12769,7 @@ const HANDLERS: Record<string, Handler> = {
 	'pcb.drc.rules.set': pcbDrcRulesSet,
 	'pcb.config.get': pcbConfigGet,
 	'pcb.config.set': pcbConfigSet,
+	'pcb.net.color.set': pcbNetColorSet,
 	'pcb.line.create': pcbLineCreate,
 	'pcb.via.create': pcbViaCreate,
 	'pcb.line.list': pcbLineList,

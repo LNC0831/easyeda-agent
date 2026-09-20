@@ -159,17 +159,19 @@ Two committed scripts do this end to end — no external tooling needed:
 # 0. One-time: install the ws devDependency the server uses.
 (cd extension && npm install)
 
-# 1. Rebuild the connector after editing its source (bumps the patch version).
-make eext                                   # recompiles extension/dist/index.js
+# 1. Prepare an independent X.Y.Z-dev.N version in connector/npm/Skill metadata
+#    and changelog; build and install the local package (no public release).
+make local-build VERSION=vX.Y.Z-dev.N DIST="$PWD/dist/local-vX.Y.Z-dev.N"
 
 # 2. Serve the fresh bundle over a local WebSocket (one-shot; exits after serving).
 node extension/scripts/hot-reload-server.mjs &     # ws://127.0.0.1:8790
 
 # 3. In the EDITOR PAGE, run hot-reload-inject.js — paste into the browser console,
 #    or (agent-driven) pass its body to a chrome-devtools MCP evaluate_script call.
-#    Fill in TEAM (teamUuid, from `easyeda project info`), UUID + VERSION (from
-#    extension/extension.json). It pulls the bundle over ws://, overwrites the
-#    connector's <uuid>|dist/index.js record + bumps config.version, then reloads.
+#    Call hotReloadConnector with TEAM, UUID, VERSION, EXPECTED_VERSION,
+#    EXPECTED_SHA256 (fresh installed bundle hash) and BUNDLE_SHA256 (local hash).
+#    It checks the existing permission/version/hash, atomically updates both
+#    records, verifies the stored result, then schedules the host reload.
 
 # 4. Verify the new code is live.
 easyeda daemon health                       # connectorVersion shows the new version
@@ -182,8 +184,12 @@ actions will correctly refuse with `CONNECTOR_QUEUE_BLOCKED`. After reload, wait
 new `windowId`/`connectedAt` in `easyeda daemon health` before issuing a write.
 
 The inject script writes the IndexedDB records described above; the server reads
-`extension/dist/index.js` + the version from `extension.json`. Both take flags
-(`--port`, `--bundle`; `--keep` to stay resident) — see the file headers.
+`extension/dist/index.js` + the version from `extension.json`. The server takes `--port`, `--bundle` and `--keep`; the injector accepts
+`PORT` and `RELOAD` options — see the file headers. Both hashes are required.
+The injector rejects missing/disabled installations and never changes permission
+flags. Its single readwrite transaction remains alive while hashing the old File;
+puts execute inside an IndexedDB event callback so the transaction is active.
+An identity/hash error or failed put aborts both writes.
 
 `connectorVersion` in `daemon health` is compiled into `index.js`
 (`CONNECTOR_VERSION`), so a changed value is proof the new bundle is running.

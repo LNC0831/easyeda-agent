@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -31,6 +32,7 @@ exam settings. Grid/snap/global preferences are currently unsupported.`,
 			return dispatch(cfg, "pcb.config.get", *window, nil, stdout, stderr)
 		},
 	})
+	group.AddCommand(newPcbConfigNetColorCmd(cfg, window, stdout, stderr))
 	type dimension struct{ flag, field, help string }
 	for _, op := range []struct {
 		kind, short, example string
@@ -123,6 +125,36 @@ Use pcb save, doc reload, config get to verify persistence.`,
 		group.AddCommand(cmd)
 	}
 	return group
+}
+
+func newPcbConfigNetColorCmd(cfg *appConfig, window *string, stdout, stderr io.Writer) *cobra.Command {
+	var net, color string
+	var dryRun bool
+	cmd := &cobra.Command{
+		Use: "net-color", Short: "Set one network's RGB color, preserving transparency",
+		Args:    cobra.NoArgs,
+		Example: "  easyeda pcb config net-color --net +5V --color '#FF8000' --dry-run --project ceshi --doc PCB1",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(net) == "" || !regexp.MustCompile(`^#[0-9a-fA-F]{6}$`).MatchString(color) {
+				return fmt.Errorf("provide --net and --color '#RRGGBB'")
+			}
+			var response bytes.Buffer
+			err := dispatch(cfg, "pcb.net.color.set", *window, map[string]any{"net": net, "color": color, "dryRun": dryRun}, &response, stderr)
+			if _, writeErr := stdout.Write(response.Bytes()); writeErr != nil {
+				return writeErr
+			}
+			if err != nil {
+				return err
+			}
+			return checkPcbConfigResponse(response.Bytes(), dryRun)
+		},
+	}
+	cmd.Flags().StringVar(&net, "net", "", "existing exact net name (required)")
+	cmd.Flags().StringVar(&color, "color", "", "RGB hex including #: #RRGGBB (required)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "read and show requested color without writing")
+	_ = cmd.MarkFlagRequired("net")
+	_ = cmd.MarkFlagRequired("color")
+	return cmd
 }
 
 func checkPcbConfigResponse(data []byte, dryRun bool) error {

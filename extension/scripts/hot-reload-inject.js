@@ -1,83 +1,80 @@
-// Browser-side half of the connector hot-reload (see docs/dev-environment.md §5).
-//
-// Run this INSIDE the EasyEDA Pro editor page — paste into the browser devtools
-// console, or (agent-driven) pass as the body of a chrome-devtools MCP
-// `evaluate_script` call. It pulls the freshly-built bundle from the local WS
-// server (hot-reload-server.mjs), overwrites the connector's executable record in
-// IndexedDB, bumps its stored version, and reloads the page. EasyEDA re-reads the
-// extension from IndexedDB on load, so the new code runs — no uninstall, no
-// re-import, no EasyEDA restart.
-//
-// FILL IN THESE THREE before running (all discoverable, see below):
-//   TEAM    — teamUuid, from `easyeda project info` (or the User_<teamUuid>_v6 DB name)
-//   UUID    — the connector's extension uuid, from extension/extension.json ("uuid")
-//   VERSION — the new version string, from extension/extension.json ("version")
-// PORT defaults to 8790 (match hot-reload-server.mjs --port).
-//
-// NOTE: IndexedDB store names/keys are EasyEDA-internal, not a stable public API
-// (today the DB is `User_<teamUuid>_v6`); re-verify if EasyEDA bumps its schema.
-
-async function hotReloadConnector({ TEAM, UUID, VERSION, PORT = 8790 }) {
-	// 1. Fetch the new bundle over ws:// (http:// is blocked as mixed content).
-	const b64 = await new Promise((resolve, reject) => {
+// Reviewed development-only update of an ALREADY installed connector (§5 of
+// docs/dev-environment.md). Save all open documents first. Supply independently
+// recorded old/new SHA-256 hashes; never enable permissions or create a database.
+// Invoke through the normal debug exec path; this does not edit design objects.
+async function hotReloadConnector({ TEAM, UUID, VERSION, EXPECTED_VERSION, EXPECTED_SHA256, BUNDLE_SHA256, PORT = 8790, RELOAD = true }) {
+	if (![TEAM, UUID, VERSION, EXPECTED_VERSION].every(v => typeof v === 'string' && v.length)
+		|| ![EXPECTED_SHA256, BUNDLE_SHA256].every(v => /^[a-f0-9]{64}$/.test(v))) {
+		throw new Error('Explicit team, UUID, versions and old/new SHA-256 hashes are required');
+	}
+	const sha = async bytes => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), v => v.toString(16).padStart(2, '0')).join('');
+	const message = await new Promise((resolve, reject) => {
 		const ws = new WebSocket(`ws://127.0.0.1:${PORT}`);
+		const timer = setTimeout(() => finish(new Error('WS timeout')), 15000);
+		function finish(err, value) { clearTimeout(timer); ws.close(); err ? reject(err) : resolve(value); }
 		ws.onopen = () => ws.send(JSON.stringify({ action: 'getFile' }));
-		ws.onmessage = (ev) => {
-			const m = JSON.parse(ev.data);
-			if (m.action === 'getFile_Response') {
-				if (m.error) reject(new Error(m.error));
-				else resolve(m.content);
-				ws.close();
-			}
+		ws.onmessage = ev => {
+			try { const m = JSON.parse(ev.data); if (m.action === 'getFile_Response') finish(m.error ? new Error(m.error) : null, m); }
+			catch (err) { finish(err); }
 		};
-		ws.onerror = () => reject(new Error('WS error — is hot-reload-server.mjs running on port ' + PORT + '?'));
-		setTimeout(() => reject(new Error('WS timeout')), 15000);
+		ws.onerror = () => finish(new Error('Local hot-reload WS error'));
 	});
-	const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-
-	// 2. Open the extension IndexedDB.
-	const db = await new Promise((res, rej) => {
-		const q = indexedDB.open(`User_${TEAM}_v6`);
-		q.onsuccess = () => res(q.result);
-		q.onerror = () => rej(q.error);
+	const bin = Uint8Array.from(atob(message.content), c => c.charCodeAt(0));
+	if (message.version !== VERSION || message.size !== bin.length || await sha(bin) !== BUNDLE_SHA256) throw new Error('Served bundle version/size/hash mismatch');
+	const database = `User_${TEAM}_v6`;
+	if ((await indexedDB.databases()).filter(d => d.name === database).length !== 1) throw new Error('Expected exactly one existing target database');
+	const db = await new Promise((resolve, reject) => {
+		const q = indexedDB.open(database);
+		q.onupgradeneeded = () => { q.transaction.abort(); reject(new Error('Refusing to create/upgrade database')); };
+		q.onsuccess = () => resolve(q.result);
+		q.onerror = () => reject(q.error);
 	});
-	const get = (store, key) => new Promise((res, rej) => {
-		const r = db.transaction(store, 'readonly').objectStore(store).get(key);
-		r.onsuccess = () => res(r.result);
-		r.onerror = () => rej(r.error);
-	});
-	const put = (store, val, key) => new Promise((res, rej) => {
-		const os = db.transaction(store, 'readwrite').objectStore(store);
-		const r = os.keyPath == null && key !== undefined ? os.put(val, key) : os.put(val);
-		r.onsuccess = () => res(true);
-		r.onerror = () => rej(r.error);
-	});
-
-	// 3. Overwrite the connector's only executable file: <uuid>|dist/index.js.
 	const fileKey = `${UUID}|dist/index.js`;
-	const rec = await get('extensionsObjectStorage', fileKey);
-	if (!rec) throw new Error(`file record not found: ${fileKey} (wrong UUID, or connector not installed?)`);
-	rec.source = new File([bin], 'index.js', { type: 'text/javascript' });
-	await put('extensionsObjectStorage', rec, fileKey);
-
-	// 4. Bump the stored version so EasyEDA treats it as changed.
-	const idx = await get('extensionsIndex', UUID);
-	if (!idx) throw new Error(`index record not found for uuid ${UUID}`);
-	const oldVersion = idx.config && idx.config.version;
-	if (idx.config) idx.config.version = VERSION;
-	if (typeof idx.fileSize === 'number') idx.fileSize = bin.length;
-	await put('extensionsIndex', idx, UUID);
-
-	// 5. Reload so EasyEDA re-reads the extension from IndexedDB. When this runs
-	// inside the CONNECTOR's sandbox (debug exec path — the fully hands-free
-	// loop), bare location.reload() is a silent no-op; window.top reaches the real
-	// editor page (live-verified 2026-08-11: bare reload left both connections'
-	// connectedAt unchanged, window.top.location.reload() re-attached at the new
-	// version). Same-origin here, so top access is allowed.
-	try { window.top.location.reload(); }
-	catch { location.reload(); }
-	return { ok: true, bytes: bin.length, oldVersion, newVersion: VERSION };
+	const stores = ['extensionsIndex', 'extensionsObjectStorage'];
+	const request = q => new Promise((resolve, reject) => { q.onsuccess = () => resolve(q.result); q.onerror = () => reject(q.error); });
+	try {
+		// Keep this single readwrite transaction alive while hashing the old File.
+		// Both reads and both writes share its lock: drift cannot slip between a
+		// read-only preflight and the update, and either both writes commit or neither.
+		await new Promise((resolve, reject) => {
+			const tx = db.transaction(stores, 'readwrite');
+			const index = tx.objectStore(stores[0]), files = tx.objectStore(stores[1]);
+			let pending = true, failure, commit;
+			tx.oncomplete = () => resolve();
+			tx.onabort = () => reject(failure || tx.error || new Error('Update aborted'));
+			tx.onerror = () => { failure ||= tx.error; };
+			function keepAlive() {
+				if (pending) index.get(UUID).onsuccess = () => {
+					if (commit) { const write = commit; commit = null; write(); }
+					else keepAlive();
+				};
+			}
+			keepAlive();
+			(async () => {
+				const [idx, rec] = await Promise.all([request(index.get(UUID)), request(files.get(fileKey))]);
+				if (!idx || !rec || idx.config?.uuid !== UUID || idx.config?.version !== EXPECTED_VERSION) throw new Error('Installed connector identity/version mismatch');
+				if (idx.isEnable !== true || idx.isAllowExternalInteractions !== true) throw new Error('Existing connector permissions are not enabled; refusing to change permissions');
+				if (!rec.source || await sha(await rec.source.arrayBuffer()) !== EXPECTED_SHA256) throw new Error('Installed bundle hash mismatch');
+				const oldSize = rec.source.size;
+				rec.source = new File([bin], 'index.js', { type: 'text/javascript' });
+				idx.config.version = VERSION;
+				if (typeof idx.fileSize === 'number') idx.fileSize += bin.length - oldSize;
+				// Schedule puts in an IDB callback where this transaction is active.
+				commit = () => {
+					try {
+						const put = (store, value, key) => store.keyPath == null ? store.put(value, key) : store.put(value);
+						put(files, rec, fileKey); put(index, idx, UUID); pending = false;
+					}
+					catch (err) { failure = err; pending = false; tx.abort(); }
+				};
+			})().catch(err => { failure = err; pending = false; tx.abort(); });
+		});
+		const tx = db.transaction(stores, 'readonly');
+		const [idx, rec] = await Promise.all([request(tx.objectStore(stores[0]).get(UUID)), request(tx.objectStore(stores[1]).get(fileKey))]);
+		if (idx.config.version !== VERSION || !idx.isEnable || !idx.isAllowExternalInteractions || await sha(await rec.source.arrayBuffer()) !== BUNDLE_SHA256) throw new Error('Stored update readback failed; do not reload');
+		// Return evidence before the connector disconnects on the scheduled reload.
+		if (RELOAD) setTimeout(() => window.top.location.reload(), 1500);
+		return { ok: true, database, uuid: UUID, bytes: bin.length, oldVersion: EXPECTED_VERSION, newVersion: VERSION, sha256: BUNDLE_SHA256, permissionsPreserved: true, reloadScheduled: RELOAD };
+	}
+	finally { db.close(); }
 }
-
-// Example call (replace the placeholders):
-// hotReloadConnector({ TEAM: '<teamUuid>', UUID: '<extensionUuid>', VERSION: '<x.y.z>' });

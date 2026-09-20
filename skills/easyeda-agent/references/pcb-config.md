@@ -41,9 +41,27 @@ easyeda pcb config get --project ceshi > config-after.json
 不能盲重试。规则及绑定可用 `pcb drc-rules-set --from config-before.json` 完整替换/恢复；
 此命令不恢复网络类成员，执行前需确认成员与导出时一致。
 
-验证状态：新 `pcb config` 命令为 `offline-verified`（Web 3.2.203 脱敏规则快照、单位换算、
-差异范围、异常/回读测试）；尚未用此入口现场 save/reload。历史 raw 导入的现场记录不转授给
-新命令。保存后重载失败时结果为 incomplete，不能声称配置已持久化或考试完成。
+Web 3.2.203 的规则写回会出现 IEEE 浮点尾差（例如 `0.1759966` →
+`0.17599659999999998`）。规则数值仅允许 `8 × Number.EPSILON` 的相对误差，
+结构、单位和字符串仍严格一致；没有工程尺寸级容差，也不忽略丢字段或真实值变化。
+计划期间的源漂移检查仍为严格比较。
+
+说明 p8 允许给电源网络设颜色：`pcb config net-color --net +5V --color '#FF8000'`。
+用 `--dry-run` 预览，`pcb nets` 回读；只改指定网络 RGB，保留当前透明度，不修改网络类成员、
+规则或走线。CLI 接受六位 RGB hex，连接器按官方网络颜色的归一化 0–1 通道传值并回读；
+读回不符或失败返回非零。恢复时将原始 RGB 转回 hex，再走同一 typed 命令。仍须保存、重载验证。
+
+验证状态：`live-verified`。2026-09-20 在 Web 3.2.203、工程 `ceshi`、考试 PCB
+`PCB1_1`（UUID `2e719e9419653c72`）实际执行了 dry-run、规则/过孔/网络类绑定/网络颜色写入、
+严格回读、保存、重载及幂等重放；每项即时回读为 `verified:true`，重放为 `changed:false`。
+测试后通过同一 typed 入口恢复原规则与颜色，再次保存/重载；最终规则、46 个网络和 69 个组件
+均与原基线逐字段一致。此状态只证明配置入口及持久化，不证明该 PCB 的全部考试设计要求完成。
+
+同日按 `esp32MiniRequire.md` 第一节原始需求运行固定回归：31 个 PCB 器件、四个铜层、GND 与
++3V3 内层正片铜、PWR 类和全层天线禁铜区均保存后持久化，布局检查为 0 short / 0 overlap /
+0 off-board；但原生 DRC 仍有 53 个唯一违规（启发式走线穿越天线禁区/机械槽、间距和连接
+错误），且 Inner1/Inner2 的 `PLANE` 类型重载后回退成 `SIGNAL`，只有正片铜保留。因此该固定
+回归为 `incomplete`，不能作为完整整板验收。临时 Board 已删除并切回上述考试 PCB。
 
 ## 其他考试配置的现有入口
 
@@ -55,4 +73,10 @@ easyeda pcb config get --project ceshi > config-after.json
 | 默认原理图 DRC | `sch drc/check` 检查；当前 SDK 没有可验证的原理图规则重置入口，不能用全局 restoreDefault 代替 |
 | 网格、吸附、系统偏好 | 当前官方 SYS_Setting 仅暴露全局恢复默认；逐项设置为 unsupported |
 
+2026-09-20 已对照最新 `@jlceda/pro-api-types@0.4.25`，并在 Web 3.2.203 只读枚举实际
+`SYS_Setting` 与 `SCH_Drc`：前者仍仅 `restoreDefault`、后者仅 `check`。上述缺口不能靠更新
+类型包或关闭 DRC 解决。原生泪滴创建同样没有公开 API，导出 Gerber 的 TearDrop 枚举不是创建方法。
+
 规则配置不改变已有走线宽度、过孔尺寸，也不自动布线。最后仍须检查真实轨迹、DRC 和连通。
+`pcb stackup set` 现会逐层回读并在宿主拒绝或未应用时非零退出；本次现场也证明即时成功不等于
+持久化成功，要求内层 `PLANE` 时仍须保存、重载后再次 `pcb layers`，回退为 `SIGNAL` 就应报告失败。

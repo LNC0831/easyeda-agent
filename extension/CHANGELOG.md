@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.3-dev.3] — 2026-09-20 (local development)
+
+- Make `pcb stackup set` read back copper count and every requested inner-layer type. Rejected layer writes now return unverified/partial evidence and a non-zero CLI status instead of a false success; repeated matching requests are no-op verified.
+- Accept only relative IEEE roundoff in PCB rule write/readback and idempotence; keep exact source-drift checks and reject missing fields, unit changes and real value differences. Found on Web 3.2.203 during live clearance write.
+- Add typed `pcb.net.color.set` and `pcb config net-color` with hex RGB input, preserved alpha, dry-run and strict readback failure reporting.
+- Require expected versions and SHA-256 hashes for the development connector hot reload; replace the index and bundle atomically while preserving existing permissions.
+- Live Web 3.2.203 validation on the 69-component exam PCB covers dry-run, rule/via/class/color writes, strict readback, save/reload persistence, idempotent replay and full baseline restoration. The fixed ESP32 regression persisted 31 components, four copper layers, inner GND/+3V3 pours and its antenna keep-out, but remains incomplete: native DRC has 53 unique violations and requested inner `PLANE` types revert to `SIGNAL` after reload. The temporary Board was deleted after preserving evidence.
+
 ## [1.5.2] — 2026-09-20
 
 - Add typed `pcb.config.get/set` and `pcb config get/clearance/track/via/bind` for parameterized PCB design rules: mil/mm conversion, Track-to-Track clearance, named track rules, via diameter bounds, and class/member Track assignments. Preserve unrelated settings, preview exact changes, detect source drift, and report unverified writes as partial failures. Reuse full-rule rollback/readback and accept config exports for restore. Real Web 3.2.203 fixtures cover the 260919 exam settings offline; live save/reload and the fixed ESP32 end-to-end regression remain pending.
