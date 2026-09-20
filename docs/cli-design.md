@@ -14,6 +14,7 @@ easyeda <domain> <action> [flags]
 |---|---|
 | `easyeda sch` | 原理图操作（connectivity / plan / apply / place / wire / drc / save / export …） |
 | `easyeda pcb` | PCB 操作（layout / line / via / import / align …） |
+| `easyeda pcb config` | 当前 PCB 配置：get / clearance / track / via / bind；局部参数修改、单位换算、dry-run 和真实回读 |
 | `easyeda bom` | BOM 导出与补全 |
 | `easyeda lib` | 器件库搜索、符号/封装/Device 资产创建与选型 |
 | `easyeda daemon` | 守护进程管理（start / health） |

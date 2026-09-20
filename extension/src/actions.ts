@@ -8,6 +8,7 @@
 import { type BeautifyOptions, runBeautify } from './beautify';
 import { armDeadline } from './deadlines';
 import { exactJSON, preservedInstance } from './preserve-instance';
+import { barePcbRuleConfiguration, planPcbConfig } from './pcb-config';
 import { documentTypeLabel, readResponseContext } from './eda-context';
 import { readProjectFootprintSourceArchive } from './native-footprint-source';
 import {
@@ -10630,24 +10631,10 @@ const pcbDrcRules: Handler = async () => {
 	return { result: { rules: rules ?? null } };
 };
 
-/**
- * `getCurrentRuleConfiguration()` returns `{ name, config }` in EasyEDA Pro
- * 3.2.203, while `overwriteCurrentRuleConfiguration()` accepts only the bare
- * `config` object.  Some older/test hosts already return the bare object, so
- * normalize both shapes at the connector boundary.
- */
-const barePcbRuleConfiguration = (value: unknown): Record<string, unknown> | null => {
-	if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-	const record = value as Record<string, unknown>;
-	const nested = record.config;
-	if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
-		return nested as Record<string, unknown>;
-	}
-	return record;
-};
-
 /** Replace the complete opaque rule payload exported by pcb.drc.rules. */
-const pcbDrcRulesSet: Handler = async (payload) => {
+const pcbDrcRulesSet: Handler = async payload => writePcbRules(payload);
+
+async function writePcbRules(payload: Payload, expected?: Record<string, unknown>): Promise<ActionResult> {
 	const suppliedRuleConfiguration = payload.ruleConfiguration ?? payload.rules;
 	const ruleConfiguration = barePcbRuleConfiguration(suppliedRuleConfiguration);
 	if (!ruleConfiguration) {
@@ -10678,6 +10665,10 @@ const pcbDrcRulesSet: Handler = async (payload) => {
 			before: { ruleConfiguration: beforeRules, ...(netRules === undefined ? {} : { netRules: beforeNetRules }) },
 			requested: { ruleConfiguration, ...(netRules === undefined ? {} : { netRules }) },
 		} };
+	}
+	if (expected && (exactJSON(beforeRules) !== exactJSON(expected.ruleConfiguration)
+		|| (netRules !== undefined && exactJSON(beforeNetRules) !== exactJSON(expected.netRules)))) {
+		throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, 'PCB configuration changed during planning; read fresh state and retry. No write was attempted.');
 	}
 
 	const readActual = async (): Promise<{
@@ -10789,6 +10780,46 @@ const pcbDrcRulesSet: Handler = async (payload) => {
 			warnings: ['EasyEDA reported both writes successful, but exact readback differs; inspect actual before continuing.'],
 		}),
 	};
+}
+
+const readPcbConfig = async () => {
+	const raw = await eda.pcb_Drc.getCurrentRuleConfiguration();
+	const ruleConfiguration = barePcbRuleConfiguration(raw);
+	const classes = await eda.pcb_Drc.getAllNetClasses();
+	const netRules = await eda.pcb_Drc.getNetRules();
+	if (!ruleConfiguration || !Array.isArray(classes) || !Array.isArray(netRules)) {
+		throw new ActionError(ErrorCodes.INVALID_STATE, 'PCB rules, net classes or net rules are unavailable.');
+	}
+	return JSON.parse(JSON.stringify({ ruleConfiguration, classes, netRules, configurationName: raw?.name ?? null })) as Record<string, any>;
+};
+
+const pcbConfigGet: Handler = async () => ({ result: await readPcbConfig() });
+
+const pcbConfigSet: Handler = async (payload) => {
+	const before = await readPcbConfig();
+	const { changes, ...requested } = planPcbConfig(before, payload);
+	if (payload.dryRun === true) return { result: { dryRun: true, before, requested, changes } };
+	if (!changes.length) {
+		const current = await readPcbConfig();
+		if (exactJSON(current) !== exactJSON(before)) throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, 'PCB configuration changed during planning; no write was attempted.');
+		return { result: { before, requested, changes, changed: false, verified: true, partial: false, actual: requested } };
+	}
+	if (payload.kind === 'bind' && exactJSON(await eda.pcb_Drc.getAllNetClasses()) !== exactJSON(before.classes)) {
+		throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, 'PCB net classes changed during planning; no write was attempted.');
+	}
+	const result = await writePcbRules(requested, before);
+	let verified = result.result?.verified === true;
+	let classEvidence: Record<string, unknown> = {};
+	if (payload.kind === 'bind') {
+		try {
+			const actualClasses = await eda.pcb_Drc.getAllNetClasses();
+			const classesVerified = exactJSON(actualClasses) === exactJSON(before.classes);
+			verified = verified && classesVerified;
+			classEvidence = { actualClasses, classesVerified };
+		}
+		catch (err) { verified = false; classEvidence = { classesVerified: false, classesReadbackError: describeThrown(err) }; }
+	}
+	return { ...result, result: { ...result.result, before, requested, changes, ...classEvidence, verified, partial: !verified } };
 };
 
 const pcbNetClassList: Handler = async () => {
@@ -12678,6 +12709,8 @@ const HANDLERS: Record<string, Handler> = {
 	'pcb.drc.check': pcbDrcCheck,
 	'pcb.drc.rules': pcbDrcRules,
 	'pcb.drc.rules.set': pcbDrcRulesSet,
+	'pcb.config.get': pcbConfigGet,
+	'pcb.config.set': pcbConfigSet,
 	'pcb.line.create': pcbLineCreate,
 	'pcb.via.create': pcbViaCreate,
 	'pcb.line.list': pcbLineList,

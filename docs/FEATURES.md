@@ -4,6 +4,8 @@
 
 ## 当前基线
 
+- PCB 配置 CLI：`pcb config get/clearance/track/via/bind`，覆盖考试中的安全间距、线宽规则（含复制新建 PWR）、过孔尺寸和现有网络类绑定；支持单位换算、dry-run、保留其余配置及写后回读。Web 3.2.203 真实规则 fixture 离线验证，现场 save/reload 和 ESP32 固定全流程回归待运行；网格/吸附等全局偏好仍 unsupported。
+
 - 私有器件库现场佐证：[AS07-M1101D-SMA](examples/as07-m1101d-sma/README.md)。从用户尺寸/引脚图创建 Symbol、Footprint、Device，再按反馈修正符号和框外丝印；保留最终规格、官方渲染和回读数据。额外文字及修正使用官方 API 调试路径，不代表单条 build 已覆盖；未完成实例接线、PCB DRC 或实物装配验证。
 - 原理图统一架构：[数据驱动架构基准](../skills/easyeda-agent/references/schematic-data.md#数据驱动架构基准)。原始快照保留，源数据驱动计算、检查和修复；不是现场逐件试摆后看图兜底。
 - 通用两层布局：`layout-plan --zones` 消费明确核心/外围归属和约束，`layout-sheet-plan` 只选择/平移完整候选；固定 `layout-render` 与 `compose --layout-page` 保留同一目标。任一区失败不能拼半成品。

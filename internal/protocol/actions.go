@@ -1182,6 +1182,18 @@ func AllActions() []ActionSpec {
 			Outputs:     []string{"rulesWritten", "netRulesWritten", "ruleConfigurationVerified", "netRulesVerified", "verified", "actual", "partial/writeFailed/writeError/readbackError optional", "rollbackAttempted/rollbackRulesWritten/rollbackNetRulesWritten/rolledBack optional"},
 			VerifyWith:  []string{"pcb.drc.rules", "pcb.net_class.list", "pcb.drc.check"},
 		},
+		{
+			Name: "pcb.config.get", Domain: DomainPcb, Phase: 2, NeedsWindow: true,
+			Description: "Export current PCB ruleConfiguration (bare config), classes and netRules. Read-only; dimensions retain each rule's storage unit. Does not read global editor preferences.",
+			Outputs:     []string{"ruleConfiguration", "classes", "netRules", "configurationName"},
+		},
+		{
+			Name: "pcb.config.set", Domain: DomainPcb, Phase: 2, NeedsWindow: true, Mutates: true,
+			Description: "Patch freshly read PCB rules, preserving unspecified fields: clearance edits Track-to-Track cells only; track updates existing layer tables or clones copyFrom into a new non-default rule; via updates diameter bounds; bind assigns a named track rule to an existing class and every member. Converts mil/mm into observed storage units, rejects unknown schemas and invalid ranges before writing. dryRun previews before/requested/changes. Re-reads before writing to detect concurrent changes; writes through the full rules writer with rollback and exact readback. Unverified outcomes carry partial:true. Save/reload/get is still required for persistence.",
+			Inputs:      []string{"kind (clearance|track|via|bind)", "unit optional (mil default|mm)", "name (for clearance/track/via)", "trackToTrack (clearance)", "min/default/max optional (track; at least one)", "copyFrom optional (required for a new track rule)", "minOuter/defaultOuter/maxOuter/minHole/defaultHole/maxHole optional (via; at least one)", "netClass/trackRule (bind)", "dryRun optional"},
+			Outputs:     []string{"before", "requested", "changes", "verified", "partial", "actual", "rollback/readback failure evidence when applicable"},
+			VerifyWith:  []string{"pcb.config.get", "pcb.drc.check"},
+		},
 		// ─── PCB routing (copper tracks + vias) ──────────────────────────
 		// Real routing primitives — additive creates (no confirm), like the
 		// schematic wire/netflag creates. Bind to a net by NAME; pull layer ids

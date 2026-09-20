@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- Add typed `pcb.config.get/set` and `pcb config get/clearance/track/via/bind` for parameterized PCB design rules: mil/mm conversion, Track-to-Track clearance, named track rules, via diameter bounds, and class/member Track assignments. Preserve unrelated settings, preview exact changes, detect source drift, and report unverified writes as partial failures. Reuse full-rule rollback/readback and accept config exports for restore. Real Web 3.2.203 fixtures cover the 260919 exam settings offline; live save/reload and the fixed ESP32 end-to-end regression remain pending.
+
 ## [1.5.1] — 2026-09-17
 
 - Add offline `sch zone-review` ownership diagnostics and run them automatically before `layout-plan --zones`. Reports preserve source hashes and explicit component/pin/net evidence for multi-core hints, non-rail subgraphs detached from the declared core, and rail-only attachment endpoints, while leaving the source JSON and Apply state untouched for AI review.

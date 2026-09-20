@@ -152,6 +152,10 @@ EasyEDA 交互界面兜底。能力边界与未来 typed 验收见 [project-impo
 
 ## PCB 基础上下文（非穷举）
 
+- `pcb.config.get` / `pcb.config.set` — 当前 PCB 的配置读取与参数化局部修改。CLI 为
+  `pcb config get/clearance/track/via/bind`；参数、mil/mm、dry-run、部分成功及回读契约见
+  [pcb-config.md](pcb-config.md)。`get` 导出可交给 `pcb drc-rules-set --from` 完整恢复。
+
 - `pcb.documents.list` — 工程内所有 PCB 文档（uuid + name）
 - `pcb.components.list` — PCB 上的封装/器件（可含 pads）
 - `pcb.layers.list` — PCB 层列表 + 当前层 + 铜层数（会先激活 PCB tab 保证 `currentLayer` 可读回；无当前层时附带 `visibleLayers` 作为显示状态证据）→ `easyeda pcb layers`

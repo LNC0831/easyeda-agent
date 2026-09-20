@@ -69,6 +69,9 @@ func parsePcbDrcRulesSetSpec(data []byte) (map[string]any, error) {
 		}
 		rules, ok := result["rules"]
 		if !ok {
+			rules, ok = result["ruleConfiguration"] // pcb config get export
+		}
+		if !ok {
 			return nil, fmt.Errorf("action envelope result requires rules")
 		}
 		spec := map[string]any{"ruleConfiguration": rules}
@@ -143,6 +146,7 @@ func newPcbCmd(cfg *appConfig, stdout, stderr io.Writer) *cobra.Command {
 		Short: "PCB operations",
 	}
 	pcb.PersistentFlags().StringVar(&window, "window", "", "EasyEDA window ID")
+	pcb.AddCommand(newPcbConfigCmd(cfg, &window, stdout, stderr))
 
 	// ── drc ───────────────────────────────────────────────────────────────
 	// pcb.drc.check — the PCB counterpart to `sch drc`. Routing is automatic:
