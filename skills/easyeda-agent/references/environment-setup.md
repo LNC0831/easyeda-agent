@@ -42,6 +42,13 @@ easyeda update --check
 easyeda update
 ```
 
+原生 Windows 用 PowerShell（5.1 或 7 均可）执行同源的 `install.ps1`；`install.sh`
+只支持 macOS/Linux，在 Windows 上直接报错并指向该脚本：
+
+```powershell
+irm https://raw.githubusercontent.com/zhoushoujianwork/easyeda-agent/main/install.ps1 | iex
+```
+
 `update --check` 是显式、只读的安装对账工具，不是每次 EDA 操作的前置许可。
 `--check --exit-code` 保留现有自动化退出码：满足所选对账条件返回 0，组件差异返回 10，查询
 本身失败返回 1。正式版对账可比较 GitHub latest 与 Connector major.minor 兼容线；本地开发版
@@ -74,8 +81,13 @@ SHA-256 校验。`EASYEDA_GITHUB_PROXY=https://mirror.example/{url}` 可替换�
 
 安装链的后续修复支持 `EASYEDA_INSTALL_DIR` 指定二进制目录，并遵循客户端的
 `CODEX_HOME` / `CLAUDE_CONFIG_DIR`；未设置时仍用默认目录。需确认 `command -v easyeda`
-指向刚安装的文件，必要时刷新 shell 命令缓存。Windows 下载
-`easyeda_windows_amd64.exe` 并命名为 `easyeda.exe`，把所在目录加入 PATH，再运行
+指向刚安装的文件，必要时刷新 shell 命令缓存。Windows 首选 `install.ps1`：它遵循
+同一套 `EASYEDA_INSTALL_DIR` / `CODEX_HOME` / `CLAUDE_CONFIG_DIR`，默认装到
+`%USERPROFILE%\.local\bin`，全部资产先校验 SHA-256 再替换；目录不在用户 PATH 上时
+只打印添加命令，`-AddToPath` 或 `EASYEDA_ADD_TO_PATH=1` 才写入用户 PATH，机器级
+PATH 不动；`easyeda.exe` 被运行中的 daemon 占用时改名旧文件后换入新文件，随后需
+重启 daemon。回退的手工步骤仍然有效：下载 `easyeda_windows_amd64.exe` 并命名为
+`easyeda.exe`，把所在目录加入 PATH，再运行
 `easyeda update --skill-only --create-missing --version <version>` 安装 Skill。
 Git Bash/WSL 与原生 Windows 是不同运行环境，选择相应的二进制。
 
