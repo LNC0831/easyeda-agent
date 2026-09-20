@@ -152,6 +152,10 @@ func TestPlanNCIntermediateGuardStopsAfterUnpersistedClear(t *testing.T) {
 			result = `{"pages":[{"uuid":"d","name":"d"}]}`
 		case "pcb.documents.list":
 			result = `{"pcbs":[]}`
+		case "schematic.components.list":
+			// doc switch now requires the target page's primitive inventory to
+			// settle before reporting success.
+			result = `{"count":1}`
 		case "schematic.read":
 			// The platform claims the mutation succeeded, but both pins remain NC.
 			result = `{"components":[{"componentType":"part","designator":"U1","pins":[{"number":"1","net":"","noConnected":true},{"number":"2","net":"","noConnected":true}]}]}`

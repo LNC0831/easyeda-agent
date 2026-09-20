@@ -15,37 +15,31 @@ import (
 	"github.com/zhoushoujianwork/easyeda-agent/internal/workflow"
 )
 
-// cmd_pcb_stage.go — the `easyeda pcb stage` group (issue #97): human-in-the-loop
-// confirmation + inspection for the persistable PCB flow gate. Confirming layout
-// and outline is what unlocks the route commands, alongside the layout-lint
-// routability gate (`pcb layout-lint --gate`). State is GLOBAL per project
-// (~/.easyeda-agent/workflow/) so it survives cwd changes, and each confirm
-// stores a DOCUMENT FINGERPRINT (placement poses / outline geometry) that the
-// route gates re-verify — an edit the flow never saw invalidates the sign-off.
+// cmd_pcb_stage.go — compatibility access to the historical persisted PCB
+// checklist. Records remain inspectable for existing scripts, but no stage value
+// authorizes or blocks a PCB action. Current work uses live geometry,
+// connectivity, DRC and save/reload/readback evidence instead.
 
 // newPcbStageCmd builds the `pcb stage` group.
 func newPcbStageCmd(cfg *appConfig, window *string, stdout, stderr io.Writer) *cobra.Command {
 	stage := &cobra.Command{
 		Use:   "stage",
-		Short: "PCB flow stage gate: status / confirm-layout / confirm-outline / reset (issue #97)",
-		Long: `Persistable PCB flow stage machine and its confirmation points.
+		Short: "Deprecated PCB checklist records: status / confirm-layout / confirm-outline / reset",
+		Long: `Compatibility interface for historical PCB stage records.
 
-The design-flow skill has P2 placement-confirm, P3 outline-confirm and a P6
-routability gate; this makes them real: routing commands (route-short /
-autoroute) refuse until BOTH outline_confirmed AND pre_route_passed are set —
-enforced by the CLI AND by the daemon at /action dispatch, so raw callers are
-gated too.
+These records used to act as routing permissions. They no longer authorize,
+refuse, unlock or invalidate any typed action, composite command or raw daemon
+request. Use live object readback, connectivity, geometry checks and DRC to make
+the current decision. ` + "`pcb layout-lint --gate`" + ` is also a compatibility
+diagnostic and does not write a routing permission.
 
-Progression:
+Historical progression:
   imported → placement_ready → placement_confirmed → outline_confirmed
            → pre_route_passed → routing_authorized
 
-Confirm layout/outline HERE (after reviewing bbox, board size, edge-part
-orientation, antenna keep-out and the layout-lint result); pass the routability
-gate with 'pcb layout-lint --gate'. Any placement / outline mutation — a typed
-action, a composite command, even a GUI drag — clears the affected confirmation:
-mutating actions invalidate at the daemon, and each confirm stores a document
-fingerprint the route gates re-verify, so out-of-band edits are caught too.`,
+Existing automation may continue to read or append these records. The record
+commands validate their own historical ladder for compatibility, but their result
+has no effect on layout, outline, routing, save or verification commands.`,
 	}
 	stage.AddCommand(newPcbStageStatusCmd(cfg, window, stdout))
 	stage.AddCommand(newPcbStageSetAssemblyCmd(cfg, window, stdout, stderr))
@@ -67,8 +61,8 @@ func newPcbStageConfirmTierCmd(cfg *appConfig, window *string, stdout, stderr io
 	var empty bool
 	c := &cobra.Command{
 		Use:   "confirm-tier <1|2|3|4>",
-		Short: "Confirm one placement tier (档1 孔 → 档2 边缘件 → 档3 主芯片+RF → 档4 卫星件, issue #125)",
-		Long: `Record the per-tier placement sign-off the design-flow ladder requires:
+		Short: "Record one historical placement tier (does not lock parts or authorize actions)",
+		Long: `Record a tier in the deprecated placement checklist:
 
   tier 1  孔/结构件        mounting holes & mechanical parts
   tier 2  边缘接口件        edge connectors — orientation MUST be user-confirmed
@@ -81,7 +75,8 @@ designators (tier 4 may omit it: default = every part no earlier tier claimed);
 confirm stores a pose hash of exactly that tier's parts — moving them later
 invalidates that tier and everything after it, but NOT the earlier tiers.
 ` + "`confirm-layout`" + ` refuses until all 4 tiers are confirmed and every part is
-claimed by a tier (--force <reason> bypasses, audited).`,
+claimed by a tier (--force <reason> bypasses that compatibility check). These
+records do not lock parts and are not read by placement or routing commands.`,
 		Args: cobra.ExactArgs(1),
 		Example: `  easyeda pcb stage confirm-tier 1 --parts H1,H2,H3,H4 --note "M3 四角孔"
   easyeda pcb stage confirm-tier 2 --parts J1,USB1 --note "USB-C 开口朝外,用户已确认"
@@ -175,7 +170,7 @@ func runStageConfirmTier(cfg *appConfig, window string, n int, parts []string, e
 	}
 	if n == workflowTierCount {
 		if un := unclaimedParts(live, st.ClaimedTiers()); len(un) > 0 {
-			fmt.Fprintf(stderr, "⚠️  %d part(s) claimed by NO tier: %s — confirm-layout will refuse until they are claimed\n",
+			fmt.Fprintf(stderr, "⚠️  %d part(s) claimed by NO tier: %s — the legacy confirm-layout record remains incomplete\n",
 				len(un), strings.Join(un, ","))
 		} else {
 			fmt.Fprintln(stderr, "  all parts claimed — ready for `pcb stage confirm-layout`")
@@ -201,7 +196,7 @@ func newPcbStageStatusCmd(cfg *appConfig, window *string, stdout io.Writer) *cob
 	var asJSON bool
 	c := &cobra.Command{
 		Use:     "status",
-		Short:   "Show the current PCB stage state (confirmations + routability gate)",
+		Short:   "Show deprecated checklist records and their historical readiness calculation",
 		Args:    cobra.NoArgs,
 		Example: `  easyeda pcb stage status --project ceshi`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -224,9 +219,10 @@ func newPcbStageStatusCmd(cfg *appConfig, window *string, stdout io.Writer) *cob
 					"outlineFingerprint": st.OutlineFP,
 					"routeAllowed":       gate.Allowed,
 					"missing":            gate.Missing,
+					"compatibilityOnly":  true,
 				})
 			}
-			fmt.Fprintf(stdout, "PCB stage — project %q\n", stageProjectLabel(project))
+			fmt.Fprintf(stdout, "PCB legacy checklist — project %q\n", stageProjectLabel(project))
 			if st.Assembly != nil {
 				fmt.Fprintf(stdout, "  assembly: %s, min gap %.1fmil, large-pad access %.1fmil\n",
 					st.Assembly.Profile, st.Assembly.MinGapMil, st.Assembly.LargePadAccessMil)
@@ -255,7 +251,7 @@ func newPcbStageStatusCmd(cfg *appConfig, window *string, stdout io.Writer) *cob
 				}
 			}
 			if st.Layout != nil {
-				fmt.Fprintf(stdout, "  layout gate: score %d (%s), %d crossings, %d tight, %d access-blocked @ %s\n",
+				fmt.Fprintf(stdout, "  historical layout diagnostic: score %d (%s), %d crossings, %d tight, %d access-blocked @ %s\n",
 					st.Layout.Score, st.Layout.Verdict, st.Layout.CrossingCount,
 					st.Layout.TightPairs, st.Layout.AccessBlocked, st.Layout.At)
 			}
@@ -266,9 +262,9 @@ func newPcbStageStatusCmd(cfg *appConfig, window *string, stdout io.Writer) *cob
 				fmt.Fprintf(stdout, "  outline fingerprint: recorded @ %s\n", st.OutlineFP.At)
 			}
 			if gate.Allowed {
-				fmt.Fprintln(stdout, "  routing: ✅ authorized (outline_confirmed + pre_route_passed)")
+				fmt.Fprintln(stdout, "  legacy checklist: complete for routing (diagnostic only)")
 			} else {
-				fmt.Fprintf(stdout, "  routing: ❌ blocked — missing %s\n", strings.Join(gate.Missing, ", "))
+				fmt.Fprintf(stdout, "  legacy checklist: incomplete — missing %s (does not block actions)\n", strings.Join(gate.Missing, ", "))
 			}
 			return nil
 		},
@@ -277,14 +273,14 @@ func newPcbStageStatusCmd(cfg *appConfig, window *string, stdout io.Writer) *cob
 	return c
 }
 
-// newPcbStageSetAssemblyCmd persists the P2 assembly decision so all later
-// layout gates use the same solder-access clearance instead of model memory.
+// newPcbStageSetAssemblyCmd persists assembly spacing metadata used as a default
+// by legacy diagnostics and by placement spacing calculations.
 func newPcbStageSetAssemblyCmd(cfg *appConfig, window *string, stdout, stderr io.Writer) *cobra.Command {
 	var profile string
 	var minGap, largePadGap float64
 	c := &cobra.Command{
 		Use:   "set-assembly",
-		Short: "Persist assembly profile and solder-access clearances (issue #99)",
+		Short: "Persist assembly spacing metadata for compatibility diagnostics",
 		Args:  cobra.NoArgs,
 		Example: `  easyeda pcb stage set-assembly --profile hand-solder --min-gap 40 --large-pad-access 60 --project ceshi
   easyeda pcb stage set-assembly --profile reflow --project ceshi`,
@@ -347,15 +343,14 @@ func newPcbStageConfirmLayoutCmd(cfg *appConfig, window *string, stdout, stderr 
 	var minScore float64
 	c := &cobra.Command{
 		Use:   "confirm-layout",
-		Short: "Confirm the placement (P2): sets placement_confirmed (pinned by fingerprint)",
-		Long: `Record the user's sign-off on the component placement. Before confirming,
+		Short: "Record the placement in the deprecated checklist",
+		Long: `Record a historical placement review. Before recording,
 review the real bbox (` + "`pcb list --include-bbox`" + `), board size, edge-part
 orientation (connector openings / antenna end facing out), antenna keep-out, and
 the ` + "`pcb layout-lint`" + ` result. This sets placement_ready + placement_confirmed
 and stores a fingerprint of the live placement (designator/x/y/rotation/layer):
-route gates re-verify it, so any later move invalidates this confirmation.
-It does NOT authorize routing on its own — the outline must also be confirmed and
-the routability gate passed.`,
+legacy checklist readers can compare it with later geometry. This record does not
+lock parts, authorize routing, or block any PCB command.`,
 		Args: cobra.NoArgs,
 		Example: `  easyeda pcb stage confirm-layout --project ceshi --note "USB-C opening out, antenna at top edge"
   easyeda pcb stage confirm-layout --force "两件小板无分档必要" --project ceshi`,
@@ -364,10 +359,10 @@ the routability gate passed.`,
 		},
 	}
 	c.Flags().StringVar(&note, "note", "", "what was reviewed/confirmed (recorded in the audit trail)")
-	c.Flags().StringVar(&force, "force", "", "bypass the tier ladder gate with a reason (audited) — tiers 1-4 normally must be confirmed first (issue #125)")
+	c.Flags().StringVar(&force, "force", "", "bypass the deprecated record ladder with a reason; does not affect PCB actions")
 	c.Flags().StringVar(&specPath, "spec", "", "S0 spec JSON — unlocks the intent dimensions of the recorded quality snapshot (flow-order, internal connectors)")
 	c.Flags().Float64Var(&minScore, "min-score", 0,
-		"refuse the sign-off when the weighted layout-score falls below this (0 = record the score but never block).\n"+
+		"skip creating this compatibility record when layout-score is below this (0 = always record).\n"+
 			"Deliberately opt-in: the nine dimensions' weights and thresholds are still\n"+
 			"calibration seeds (#167 LEARNING), and gating on an uncalibrated ruler would\n"+
 			"manufacture more false blocks than it catches real problems")
@@ -569,13 +564,13 @@ func newPcbStageConfirmOutlineCmd(cfg *appConfig, window *string, stdout, stderr
 	var note string
 	c := &cobra.Command{
 		Use:   "confirm-outline",
-		Short: "Confirm the board outline (P3): sets outline_confirmed (pinned by fingerprint)",
-		Long: `Record the user's sign-off on the board outline / frame. Requires the
-placement to be confirmed first (confirm-layout), because the outline is fit to
-the placement — and the placement fingerprint is re-verified here, so a move
+		Short: "Record the board outline in the deprecated checklist",
+		Long: `Record a historical review of the board outline / frame. This compatibility
+command requires the legacy placement record first, because the outline is fit to
+the placement. The placement fingerprint is compared here, so a move
 since confirm-layout sends you back to P2. Review board dimensions,
 edge-connector protrusion (~0.5–1mm past the edge) and mounting-hole clearance
-before confirming. Stores an outline fingerprint the route gates re-verify.`,
+before recording. The result does not authorize or block any PCB operation.`,
 		Args:    cobra.NoArgs,
 		Example: `  easyeda pcb stage confirm-outline --project ceshi --note "40×25mm, USB-C 0.8mm proud"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -630,17 +625,16 @@ func runStageConfirmOutline(cfg *appConfig, window, note string, stderr io.Write
 	return nil
 }
 
-// newPcbStageResetCmd clears a stage (and everything downstream) — the manual
-// invalidate for when the user changes their mind or restarts the flow.
+// newPcbStageResetCmd clears only the deprecated compatibility record.
 func newPcbStageResetCmd(cfg *appConfig, window *string, stdout io.Writer) *cobra.Command {
 	var from string
 	var all bool
 	c := &cobra.Command{
 		Use:   "reset",
-		Short: "Clear a confirmation and everything downstream (or --all)",
-		Long: `Clear stage confirmations. --from <stage> clears that stage and every stage
-after it; --all wipes the whole record back to imported. Use when restarting the
-flow or after a manual edit the tool didn't see.`,
+		Short: "Clear deprecated checklist entries (or --all)",
+		Long: `Clear historical checklist entries. --from <stage> clears that entry and
+the later entries; --all wipes only the compatibility record back to imported.
+This does not change, reset or unlock the PCB.`,
 		Args: cobra.NoArgs,
 		Example: `  easyeda pcb stage reset --all --project ceshi
   easyeda pcb stage reset --from placement_confirmed --project ceshi`,
@@ -668,7 +662,7 @@ flow or after a manual edit the tool didn't see.`,
 			for i, c := range cleared {
 				out[i] = string(c)
 			}
-			return enc.Encode(map[string]any{"ok": true, "cleared": out})
+			return enc.Encode(map[string]any{"ok": true, "cleared": out, "compatibilityOnly": true})
 		},
 	}
 	c.Flags().StringVar(&from, "from", "", "stage to clear from (inclusive)")

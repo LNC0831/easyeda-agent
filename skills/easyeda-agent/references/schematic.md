@@ -106,9 +106,10 @@ easyeda sch sheet-geometry --project <project> --doc <page-uuid> --json
   框间间距和图纸边界。缺少现场几何时标记未验证，禁止宣称布局验收通过。
   `frame` 输入校验拒绝框间重叠；它不能代替现场回读，旧 `zone-draw` 与新 frame 的残留也须核对。
 
-- 每页运行 `sch gate --strict`：依次 layout-lint → check → bridge-check → SDK DRC。
-  `pass` 才是通过；`fail` 表示电路有阻塞项；`blocked` 表示检查未完成，先修环境。
-- gate 不能证明设计意图。另将实际 connectivity 的组件 ID、pin→net 与 NC 对照目标图。
+- 每页分别保存 `layout-lint`、`sch check`、`bridge-check` 与 SDK DRC 的实际结果；
+  `sch gate` 可用于兼容旧脚本的聚合显示，但不作为写入许可。`fail` 表示发现问题，
+  `blocked` 表示检查未完成；两者都要列出对象、证据和待修项。
+- 上述检查不能证明设计意图。另将实际 connectivity 的组件 ID、pin→net 与 NC 对照目标图。
 - `layout-lint --strict` 要求完整的单页本体、引脚和图纸几何，不能和 `--all-pages`
   合用。它不覆盖全部外置位号；需补位号与 marker 数据检查，非位号属性不参与布局判定。
   器件 tight-spacing 复用本页显式 zone/功能组 ownership：同一功能区内的紧贴不阻断，
@@ -118,7 +119,7 @@ easyeda sch sheet-geometry --project <project> --doc <page-uuid> --json
   导线与 marker 本体/文字按可见 stroke 判碰撞；foreign wire 沿边、端点或 T 接不能因
   marker bbox 被统一内缩而漏检。只允许 marker 自身 lead 在自身 anchor 的精确收口。
 - `sch check --json` 的逐条问题在 `result.findings`。SDK DRC 可能只返回布尔/聚合值，
-  不能单凭它宣称官方 UI 所有警告已清除；跳过的 gate 阶段仍需补验。
+  不能单凭它宣称官方 UI 所有警告已清除；未运行或缺数据的检查列为未验证。
 - 用 `sch export-image` 导整页或指定 `--ids`；这是文档渲染，不依赖前台视口刷新。
   产物路径以响应 `artifacts[].path` 为准。BOM 和网表另用 `bom export`、`sch netlist`。
 
@@ -142,23 +143,23 @@ PCB 的 `--center` 仍不允许补丁包含 x/y/rotation。
 ### 原生 net_label 超时（#191）
 
 `createNetLabel(x, y, net)` 是标注 EDA v4 起提供的 BETA API。仓库在
-EasyEDA 3.2.186 的实测仍会挂起，手动 UI 能放标签不代表扩展 API 可用。
+EasyEDA 3.2.186 的实测仍会挂起，交互界面存在该功能不代表扩展 API 可用。
 不要通过改参数或连续重试处理此兼容性问题。超时后先回读实际连通和残留图元，
-再按电气语义选择受支持的 netport/netflag，或由用户在 UI 放置标签后回读验证。
+再按电气语义选择受支持的 netport/netflag；没有等价 typed 能力时标记 `unsupported`。
 升级到支持该接口的宿主后仍须探测，不能只凭版本号宣称已修复。
 历史实测详见仓库 `docs/dev-environment.md` 的 Native net-label compatibility。
 
 ## 检查覆盖边界（原理图验收）
 
-### 强制执行检查（1.5.0-dev.3 起；安装并实测后才算现场覆盖）
+### typed 写入的正确性校验（安装并实测后才算现场覆盖）
 
 daemon 对 `schematic.wire.create` / `schematic.power.connect_pin` 自动读取本页真实
-引脚方向、本体与导线，写前拒绝逆向/垂直出脚、零长/斜线、穿本体及几何缺测；有旧违规
-也不能继续添加导线。位姿修改、放件、换件、符号/封装重绑定、整组移动自动做几何前读和后检。
-这些是执行路径的硬门，不需要主动运行 check，也没有 `--strict` 或 force 豁免。
+引脚方向、本体与导线，拒绝逆向/垂直出脚、零长/斜线、穿本体及几何缺测等非法输入；
+位姿修改、放件、换件、符号/封装重绑定、整组移动自动做几何前读和后检。这些校验保证
+typed 路径不会写入已知非法几何，不承担阶段许可，也不能替代主动运行事实检查。
 写后必须有同工程/页及 FIFO 顺序证据；线创建还要证明实际路径覆盖请求路径。
 返回 `SCHEMATIC_GEOMETRY_INVALID`、`partial:true` 时，可能已落地，须回读修源后重新生成，
-不盲重试或当作已撤销。此几何门不替代器件身份/位姿命中、电气连通或标记完整性的独立对账。
+不盲重试或当作已撤销。几何输入校验不替代器件身份/位姿命中、电气连通或标记完整性的独立对账。
 写入和会切页的读取共用窗口互斥；不能在另一条写入回读期间切页或叠加修改。
 
 `sch check` 使用同一纯规则，逐条给出 `pin-exit-direction`、`wire-through-body` 等
@@ -180,7 +181,7 @@ ERROR，保留器件/引脚/线段证据。允许先向外再折线；不二次�
 
 `sch check` 同时读取现场分区矩形和自由文字的真实 bbox：旧框重合报
 `partition-overlap`；自由文字压器件/标记/其他自由文字报 `text-overlap`，
-文字跨分区边界报 `text-frame-crossing`；均由 `sch gate --strict` 阻断。
+文字跨分区边界报 `text-frame-crossing`；它们作为 `sch check` finding 返回具体对象。
 完全在框外且归属未知的文字不猜测归属。非空文字缺 bbox 或几何读取失败不能当作零碰撞。
 分区包围的器件范围是本体和位号（如 Q1、Q2）；型号、参数、描述等非位号属性文字
 不参与页面碰撞计算，不要求入框，重叠/越框均不报警，也不据此扩框或判验收失败。

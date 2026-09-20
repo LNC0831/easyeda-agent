@@ -22,18 +22,11 @@ type Request struct {
 	// screenshots/exports land in the user's project, not the daemon's. Empty for
 	// callers that don't set it (the daemon then falls back to its ArtifactDir).
 	OutputDir string `json:"outputDir,omitempty"`
-	// ForceReason explicitly overrides a workflow stage gate for THIS request
-	// only (e.g. routing actions before outline_confirmed + pre_route_passed).
-	// The daemon records it in the project's stage history so the bypass is
-	// auditable, never silent. Empty = no override. The override is TIERED
-	// (issue #132): plain force only bypasses soft gaps — when the mechanical
-	// skeleton is entirely unconfirmed (neither placement_confirmed nor
-	// outline_confirmed) it is refused unless ForceUnsafe is also set.
+	// ForceReason and ForceUnsafe are deprecated wire fields kept so older
+	// clients can talk to a current daemon. Current dispatch does not treat them
+	// as permission tokens for routing, stale reads, or workflow stages.
 	ForceReason string `json:"forceReason,omitempty"`
-	// ForceUnsafe escalates ForceReason to bypass EVERYTHING, including a
-	// zero-confirmation board — the deliberate, higher-friction escape hatch
-	// (`--force-unsafe <reason>`). Meaningless without ForceReason.
-	ForceUnsafe bool `json:"forceUnsafe,omitempty"`
+	ForceUnsafe bool   `json:"forceUnsafe,omitempty"`
 	// TimeoutMs is the caller's round-trip budget. The daemon shortens its own
 	// connector wait to (TimeoutMs - grace) so the caller receives a structured
 	// DISPATCH_FAILED instead of a raw HTTP timeout when the connector hangs
@@ -63,11 +56,8 @@ type Response struct {
 	// reload`: the per-document engine state may serve stale data (SKILL iron
 	// rule 5). Purely additive — absent when there is no risk.
 	//
-	// Since the rule-5 gate landed, such a read is normally REFUSED outright with
-	// error code STALE_READ (internal/daemon/stalereads.go) rather than answered
-	// with this advisory. What still carries it is the residue the gate lets
-	// through: the block-exempt reads (pcb.snapshot) and any read that bought its
-	// way past with an audited `forceReason`.
+	// This is evidence rather than an authorization state: the read is returned
+	// and authoritative workflows finish with save, real reload, and readback.
 	StaleRisk string `json:"staleRisk,omitempty"`
 	// ConcurrentWriter is a daemon-attached, non-blocking advisory set on a
 	// mutating action when a DIFFERENT client mutated the same window recently

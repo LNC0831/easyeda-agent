@@ -46,6 +46,55 @@ var pcbClearScopes = map[string]bool{
 	"silk":       true,
 }
 
+// parsePcbDrcRulesSetSpec accepts both hand-authored rule specs and the JSON
+// emitted by `easyeda pcb drc-rules`.  CLI output is a full action envelope
+// (`{ok,result:{rules:{name,config}}}`), so requiring users or examples to
+// manually strip two wrapper levels breaks the intended export/edit/import
+// loop.  The connector performs the final {name,config} → bare config
+// normalization because that shape differs across EasyEDA host versions.
+func parsePcbDrcRulesSetSpec(data []byte) (map[string]any, error) {
+	var raw any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	root, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("top-level JSON must be an object")
+	}
+
+	if resultValue, hasResult := root["result"]; hasResult {
+		result, ok := resultValue.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("result must be an object")
+		}
+		rules, ok := result["rules"]
+		if !ok {
+			return nil, fmt.Errorf("action envelope result requires rules")
+		}
+		spec := map[string]any{"ruleConfiguration": rules}
+		if netRules, present := result["netRules"]; present {
+			spec["netRules"] = netRules
+		}
+		return spec, nil
+	}
+
+	if _, explicit := root["ruleConfiguration"]; explicit {
+		return root, nil
+	}
+	if rules, legacy := root["rules"]; legacy {
+		spec := make(map[string]any, len(root))
+		for key, value := range root {
+			spec[key] = value
+		}
+		spec["ruleConfiguration"] = rules
+		delete(spec, "rules")
+		return spec, nil
+	}
+	// A top-level {name,config} export or a bare host configuration is itself
+	// the complete opaque ruleConfiguration.
+	return map[string]any{"ruleConfiguration": root}, nil
+}
+
 // buildPcbClearPayload turns the `pcb clear` flags into the pcb.page.clear action
 // payload. `only` is validated against pcbClearScopes so a typo fails locally,
 // before hitting the daemon. Pure + unit-tested (see cmd_pcb_clear_test.go).
@@ -920,7 +969,7 @@ the placement priorities in pcb-layout-conventions.md (easyeda-agent) afterward.
 	// ── outline-get / outline-set / outline-clear (板框) ───────────────────
 	pcb.AddCommand(&cobra.Command{
 		Use:   "outline-get",
-		Short: "Read the current board outline (segment/arc counts + bbox)",
+		Short: "Read the board outline, including true center-line dimensions and rendered bbox",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return dispatch(cfg, "pcb.outline.get", window, nil, stdout, stderr)
@@ -971,6 +1020,48 @@ curves are approximated by line segments. Reports whether all components fall in
 			return dispatch(cfg, "pcb.outline.clear", window, nil, stdout, stderr)
 		},
 	})
+
+	// ── origin get/set (画布显示原点) ──────────────────────────────────────
+	// These wrap pcb_Document.getCanvasOrigin/setCanvasOrigin. The offsets only
+	// change coordinates shown in the editor; data coordinates and geometry stay put.
+	{
+		origin := &cobra.Command{
+			Use:   "origin",
+			Short: "Read or set the PCB canvas/display origin (does not move geometry)",
+			Long: `Read or set the PCB canvas origin offset from the PCB data origin.
+
+Offsets use PCB data units (mil). This changes the coordinates displayed by the
+editor only; every primitive keeps the same API/data coordinates and geometry.`,
+		}
+		origin.AddCommand(&cobra.Command{
+			Use:   "get",
+			Short: "Read the canvas-origin X/Y offsets in mil",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return dispatch(cfg, "pcb.origin.get", window, nil, stdout, stderr)
+			},
+		})
+		var offsetX, offsetY float64
+		set := &cobra.Command{
+			Use:   "set",
+			Short: "Set and read back canvas-origin X/Y offsets in mil",
+			Args:  cobra.NoArgs,
+			Example: `  easyeda pcb origin set --x 0 --y 0
+  easyeda pcb origin set --x 118.11 --y 118.11  # 3mm, display origin only`,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return dispatch(cfg, "pcb.origin.set", window, map[string]any{
+					"offsetX": offsetX,
+					"offsetY": offsetY,
+				}, stdout, stderr)
+			},
+		}
+		set.Flags().Float64Var(&offsetX, "x", 0, "canvas-origin X offset from the data origin (mil; required)")
+		set.Flags().Float64Var(&offsetY, "y", 0, "canvas-origin Y offset from the data origin (mil; required)")
+		_ = set.MarkFlagRequired("x")
+		_ = set.MarkFlagRequired("y")
+		origin.AddCommand(set)
+		pcb.AddCommand(origin)
+	}
 
 	// ── report / drc-rules (read-only PCB analysis) ────────────────────────
 	// pcb.report (per-net length + net-class/diff-pair/equal-length views),
@@ -1047,6 +1138,43 @@ high-current 0.5mm (19.69mil) — not mil fragments like 10/15/20.`,
 		c.Flags().BoolVar(&asJSON, "json", false, "emit the ladder as JSON")
 		pcb.AddCommand(c)
 	}
+	// net-class — real EasyEDA net-class CRUD. Keep the singular command distinct
+	// from `net-classes`, which is a calculated width guide and does not mutate EDA.
+	{
+		group := &cobra.Command{
+			Use:   "net-class",
+			Short: "Inspect and create persisted EasyEDA PCB net classes",
+		}
+		group.AddCommand(&cobra.Command{
+			Use:   "list",
+			Short: "List real net classes and net-rule assignments from the active PCB",
+			Args:  cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return dispatch(cfg, "pcb.net_class.list", window, nil, stdout, stderr)
+			},
+		})
+		{
+			var name string
+			var nets []string
+			c := &cobra.Command{
+				Use:     "create",
+				Short:   "Create a real net class from explicit existing PCB nets",
+				Args:    cobra.NoArgs,
+				Example: `  easyeda pcb net-class create --name PWR_Class --net +5V --net +3V3 --net GND`,
+				RunE: func(cmd *cobra.Command, args []string) error {
+					if strings.TrimSpace(name) == "" || len(nets) == 0 {
+						return fmt.Errorf("--name and at least one --net are required")
+					}
+					return dispatch(cfg, "pcb.net_class.create", window,
+						map[string]any{"name": name, "nets": nets}, stdout, stderr)
+				},
+			}
+			c.Flags().StringVar(&name, "name", "", "net-class name (required)")
+			c.Flags().StringSliceVar(&nets, "net", nil, "existing net name; repeat or comma-separate (required)")
+			group.AddCommand(c)
+		}
+		pcb.AddCommand(group)
+	}
 	// drc-rules-set — the write side of drc-rules. v1 exposes exactly one knob:
 	// the pour/plane copper clearance (Plane.*.lineClearance), raise-only. This
 	// is the solidified fix for the fresh-PCB pour-reflow divergence (a newly
@@ -1058,9 +1186,11 @@ high-current 0.5mm (19.69mil) — not mil fragments like 10/15/20.`,
 	// custom copy) also restores thermal-spoke generation.
 	{
 		var pourClearance float64
+		var fromPath string
+		var dryRun bool
 		c := &cobra.Command{
 			Use:   "drc-rules-set",
-			Short: "Raise the pour/plane copper clearance rule (raise-only) — margin fix for the fresh-PCB reflow divergence",
+			Short: "Set full PCB rules from JSON, or raise only the pour clearance",
 			Args:  cobra.NoArgs,
 			Long: `Raise the copper-pour / inner-plane clearance (Plane lineClearance) of the
 active PCB's CURRENT rule configuration to at least --pour-clearance mil.
@@ -1074,8 +1204,26 @@ pours reflow under the new clearance.`,
 			Example: `  easyeda pcb drc-rules-set --pour-clearance 12   # 10→12mil margin, then:
   easyeda pcb pour-rebuild`,
 			RunE: func(cmd *cobra.Command, args []string) error {
+				if fromPath != "" {
+					if cmd.Flags().Changed("pour-clearance") {
+						return fmt.Errorf("--from and --pour-clearance are mutually exclusive")
+					}
+					data, err := os.ReadFile(fromPath)
+					if err != nil {
+						return fmt.Errorf("read --from: %w", err)
+					}
+					spec, err := parsePcbDrcRulesSetSpec(data)
+					if err != nil {
+						return fmt.Errorf("parse --from: %w", err)
+					}
+					spec["dryRun"] = dryRun
+					return dispatch(cfg, "pcb.drc.rules.set", window, spec, stdout, stderr)
+				}
+				if dryRun {
+					return fmt.Errorf("--dry-run applies only with --from")
+				}
 				if !cmd.Flags().Changed("pour-clearance") {
-					return fmt.Errorf("--pour-clearance is required (mil, e.g. 12)")
+					return fmt.Errorf("provide --from <rules.json> or --pour-clearance <mil>")
 				}
 				if pourClearance < 4 || pourClearance > 100 {
 					return fmt.Errorf("--pour-clearance %.4g mil is out of the sane range [4, 100]", pourClearance)
@@ -1086,6 +1234,8 @@ pours reflow under the new clearance.`,
 			},
 		}
 		c.Flags().Float64Var(&pourClearance, "pour-clearance", 0, "minimum pour/plane copper clearance in mil (raise-only; required)")
+		c.Flags().StringVar(&fromPath, "from", "", "complete rules JSON: drc-rules output, {name,config}, bare config, or ruleConfiguration/netRules spec")
+		c.Flags().BoolVar(&dryRun, "dry-run", false, "show current/requested JSON without writing (with --from)")
 		pcb.AddCommand(c)
 	}
 
@@ -1915,10 +2065,6 @@ fit early. --dry-run previews the computed frame.`,
 					return err
 				}
 				out := map[string]any{"ok": true, "summary": summary, "result": sr.Result}
-				// Redrawing the board edge invalidates outline_confirmed onward (#97).
-				if cleared := invalidatePcbStageFrom(cfg, stageOutlineConfirmed, "outline-fit resized the board"); len(cleared) > 0 {
-					out["stageInvalidated"] = cleared
-				}
 				enc := json.NewEncoder(stdout)
 				enc.SetIndent("", "  ")
 				return enc.Encode(out)
@@ -2168,12 +2314,8 @@ edge) MUST be in the DSN, else the router will route under the antenna. Verify t
 exported DSN contains keepout entries before trusting the result.`,
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				// 0. Routability gate (issue #97): autoroute mutates the board, so it
-				// needs the same outline_confirmed + pre_route_passed state as
-				// route-short; --force <reason> overrides for audit.
-				if err := gateRouteCommand(cfg, window, "autoroute", forceReason, forceUnsafeReason, stderr); err != nil {
-					return err
-				}
+				// Workflow stage state is historical diagnostic data only. Autoroute
+				// proceeds from the live board and its factual preflights below.
 				// 1. Export DSN, capture the persisted file path.
 				res, err := dispatchCapture(cfg, "pcb.export.dsn", window, map[string]any{}, stdout)
 				if err != nil {
@@ -2236,11 +2378,8 @@ exported DSN contains keepout entries before trusting the result.`,
 
 				// 4. DRC the result.
 				//
-				// 写后回读放行(stale_read_optin.go):上一步的 import_autoroute 刚
-				// 把整版铜写进来,STALE_READ 门是关着的 —— 而这一步 DRC 要看的**正是
-				// 刚导进来的那批走线**,不放行就等于把 autoroute 的收尾判据整个砍掉。
-				// daemon 放行时仍会附上 staleRisk 劝告(CLI 打在 stderr):数字若不对劲,
-				// `easyeda doc reload` 后重跑 `easyeda pcb drc` 才是权威判据。
+				// 上一步刚导入整版铜，这一步 DRC 用于即时定位问题；若带 staleRisk，
+				// 保存并 reload 后重跑 `easyeda pcb drc` 才是权威判据。
 				fmt.Fprintln(stderr, "--- DRC after routing ---")
 				return dispatch(staleReadOptIn(cfg, "autoroute 写后回读:对刚导入的 SES 走线做收尾 DRC"),
 					"pcb.drc.check", window, nil, stdout, stderr)
@@ -2248,8 +2387,8 @@ exported DSN contains keepout entries before trusting the result.`,
 		}
 		c.Flags().StringVar(&routerCmd, "router", "", "external router command with {in}/{out} (or FREEROUTING_CMD env)")
 		c.Flags().BoolVar(&keep, "keep", false, "keep the intermediate SES file")
-		c.Flags().StringVar(&forceReason, "force", "", "bypass SOFT gate gaps only (e.g. pre_route_passed) — refused when neither placement_confirmed nor outline_confirmed is set (#132); reason string recorded for audit")
-		c.Flags().StringVar(&forceUnsafeReason, "force-unsafe", "", "bypass EVERYTHING incl. a fully-unconfirmed mechanical skeleton (#132) — the deliberate escape hatch; reason string recorded for audit")
+		c.Flags().StringVar(&forceReason, "force", "", "deprecated compatibility option; workflow stages no longer gate routing")
+		c.Flags().StringVar(&forceUnsafeReason, "force-unsafe", "", "deprecated compatibility option; workflow stages no longer gate routing")
 		pcb.AddCommand(c)
 	}
 
@@ -2518,13 +2657,6 @@ A SEED — verify with 'pcb layout-lint'. --dry-run prints the plan.
 					out["confirmOrientation"] = confirmOrient
 					out["note"] = "对称/低置信连接器工具无法定向,已按原样保留:请确认这些端子的开口朝板外(或手动摆放)—— " + strings.Join(confirmOrient, ", ")
 				}
-				// Moving parts invalidates any downstream confirmation (issue #97):
-				// placement_confirmed and everything after must be re-earned.
-				if !dryRun && applied > 0 {
-					if cleared := invalidatePcbStageFrom(cfg, stagePlacementConfirmed, "place-constrained moved "+fmt.Sprint(applied)+" part(s)"); len(cleared) > 0 {
-						out["stageInvalidated"] = cleared
-					}
-				}
 				enc := json.NewEncoder(stdout)
 				enc.SetIndent("", "  ")
 				return enc.Encode(out)
@@ -2747,15 +2879,6 @@ emits a chord-approximated fillet (native arcs do not commit on this build).
 				if dryRun {
 					defer setDispatchDryRun(true)()
 				}
-				// 0. Routability gate (issue #97): drawing tracks requires an
-				// outline_confirmed + pre_route_passed project state; --dry-run only
-				// prints the plan (no mutation) so it bypasses the gate. --force
-				// <reason> overrides but records the bypass for audit.
-				if !dryRun {
-					if err := gateRouteCommand(cfg, window, "route-short", forceReason, forceUnsafeReason, stderr); err != nil {
-						return err
-					}
-				}
 				// 1. Read pads (net + coords + layer) and which nets already have copper.
 				res, err := requestAction(cfg, "pcb.components.list", window,
 					map[string]any{"includePads": true})
@@ -2886,8 +3009,8 @@ emits a chord-approximated fillet (native arcs do not commit on this build).
 		c.Flags().BoolVar(&noMultilayer, "no-multilayer", false, "disable multilayer routing (defer too-long / cross-layer hops to the maze tier instead of detouring them via the alternate copper layer with vias)")
 		c.Flags().BoolVar(&routePower, "route-power", false, "also route power/ground nets as tracks (default skip — pour them instead; VCC/3V3/GND/… routed as thin tracks through pad fields is the #1 DRC source)")
 		c.Flags().BoolVar(&dryRun, "dry-run", false, "print the routing plan without drawing anything")
-		c.Flags().StringVar(&forceReason, "force", "", "bypass SOFT gate gaps only (e.g. pre_route_passed) — refused when neither placement_confirmed nor outline_confirmed is set (#132); reason string recorded for audit")
-		c.Flags().StringVar(&forceUnsafeReason, "force-unsafe", "", "bypass EVERYTHING incl. a fully-unconfirmed mechanical skeleton (#132) — the deliberate escape hatch; reason string recorded for audit")
+		c.Flags().StringVar(&forceReason, "force", "", "deprecated compatibility option; workflow stages no longer gate routing")
+		c.Flags().StringVar(&forceUnsafeReason, "force-unsafe", "", "deprecated compatibility option; workflow stages no longer gate routing")
 		pcb.AddCommand(c)
 	}
 
@@ -3229,8 +3352,8 @@ Inspect / remove with 'pcb fill list --layer 12' / 'pcb fill delete'; save after
 	// ── layout-lint (布局质量 + 可布性预测) ──────────────────────────────────
 	// PCB sibling of `sch layout-lint`: overlap / off-board / tight-spacing PLUS a
 	// routability score from the ratsnest (signal-net MST length + cross-net
-	// crossings). Run BEFORE routing to catch a placement that won't route; exits
-	// non-zero on overlap/off-board so it can gate the flow. Core in pcb_layoutlint.go.
+	// crossings). Run BEFORE routing to catch a placement that won't route; factual
+	// geometry errors still return non-zero. Core in pcb_layoutlint.go.
 	{
 		var minGap float64
 		var asJSON, gate bool
@@ -3252,10 +3375,10 @@ Pulls every footprint's rendered bbox + pads (pcb.components.list) and computes:
                        cross → the single-layer routability killer   → WARN
 
 Yields a 0-100 routability score + verdict (easy/moderate/hard/very-hard). Fewer
-crossings + shorter ratsnest = more routable. Without --gate, --min-gap defaults
-to the board electrical clearance. With --gate, the persisted assembly profile
-is mandatory; hand-solder floors the gap at 40mil and ANY tight pair fails the
-gate (issue #99). Exits non-zero on overlap/off-board or a failed gate.`,
+crossings + shorter ratsnest = more routable. --gate is retained as a compatibility
+diagnostic: it displays the historical thresholds when available, but does not
+authorize routing, write workflow state, or turn a score into a refusal. Factual
+short/overlap/off-board errors still exit non-zero.`,
 			Args: cobra.NoArgs,
 			Example: `  easyeda pcb layout-lint
   easyeda pcb layout-lint --json
@@ -3268,9 +3391,9 @@ gate (issue #99). Exits non-zero on overlap/off-board or a failed gate.`,
 		}
 		c.Flags().Float64Var(&minGap, "min-gap", 0, "min gap between footprint bboxes in mil (closer = WARN; default = board clearance)")
 		c.Flags().BoolVar(&asJSON, "json", false, "emit the report as JSON")
-		c.Flags().BoolVar(&gate, "gate", false, "apply assembly+routability gate; requires `pcb stage set-assembly`; on pass confirms pre_route_passed (#97/#99)")
-		c.Flags().IntVar(&minScore, "min-score", 60, "minimum routability score for --gate to pass")
-		c.Flags().IntVar(&maxCrossings, "max-crossings", 8, "maximum cross-net ratline crossings for --gate to pass (-1 = unlimited)")
+		c.Flags().BoolVar(&gate, "gate", false, "deprecated compatibility mode: report historical assembly/score thresholds without authorizing or blocking routing")
+		c.Flags().IntVar(&minScore, "min-score", 60, "historical score threshold displayed by compatibility --gate")
+		c.Flags().IntVar(&maxCrossings, "max-crossings", 8, "historical crossing threshold displayed by compatibility --gate (-1 = unlimited)")
 		pcb.AddCommand(c)
 	}
 
@@ -3516,35 +3639,34 @@ reflows after. Run AFTER auto-place + outline-fit + route-short (signals), then
 	}
 
 	// ── outline-round (圆角板框) ────────────────────────────────────────────
-	// Replace the board outline with a rounded rectangle (#29). Curves are chord-
-	// approximated (pcb.outline.set takes a polygon). Core in pcb_outline_round.go.
+	// Replace the board outline with a rounded rectangle (#29). Corners use the
+	// connector's verified native ARC polygon source. Core in pcb_outline_round.go.
 	{
 		var rectSpec string
 		var radius, margin float64
-		var segments int
 		var dryRun bool
 		c := &cobra.Command{
 			Use:   "outline-round",
 			Short: "Set a rounded-rectangle board outline (圆角板框)",
 			Long: `Replace the board outline with a rounded rectangle. The rect defaults to the
-CURRENT outline's bbox (or pass --rect x0,y0,x1,y1); --margin expands it outward.
+CURRENT outline's center-line bounds (or pass --rect x0,y0,x1,y1); --margin expands it outward.
 --radius is the corner radius (default ≈12% of the shorter side, clamped to half).
-Corners are chord-approximated (--segments per corner, default 6) since
-pcb.outline.set takes a polygon. The board-outline layer renders → verify with
-'pcb snapshot'. Run BEFORE pour/route (changing the outline after copper can strand it).`,
+Each corner is stored as a native 90° EasyEDA ARC in one locked BOARD_OUTLINE
+polyline. The line width is 10mil (0.254mm). Read back exact center-line dimensions
+with 'pcb outline-get'; its rendered bbox includes the stroke. Run BEFORE pour/route
+(changing the outline after copper can strand it).`,
 			Args: cobra.NoArgs,
 			Example: `  easyeda pcb outline-round --radius 80
-  easyeda pcb outline-round --rect 0,0,2000,1500 --radius 100 --segments 8
+  easyeda pcb outline-round --rect 0,0,2000,1500 --radius 100
   easyeda pcb outline-round --margin 100 --radius 60 --dry-run`,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return runOutlineRound(cfg, window, rectSpec, radius, margin, segments, dryRun, stdout, stderr)
+				return runOutlineRound(cfg, window, rectSpec, radius, margin, dryRun, stdout, stderr)
 			},
 		}
-		c.Flags().StringVar(&rectSpec, "rect", "", "axis-aligned rect 'x0,y0,x1,y1' (mil); default = current outline bbox")
+		c.Flags().StringVar(&rectSpec, "rect", "", "axis-aligned rect 'x0,y0,x1,y1' (mil); default = current outline center-line bounds")
 		c.Flags().Float64Var(&radius, "radius", 0, "corner radius (mil); default ≈12% of the shorter side")
 		c.Flags().Float64Var(&margin, "margin", 0, "expand the rect outward by this many mil before rounding")
-		c.Flags().IntVar(&segments, "segments", 6, "chord segments per 90° corner (higher = smoother)")
-		c.Flags().BoolVar(&dryRun, "dry-run", false, "print the generated polygon without setting the outline")
+		c.Flags().BoolVar(&dryRun, "dry-run", false, "print the generated native-ARC polygon source without setting the outline")
 		pcb.AddCommand(c)
 	}
 
@@ -3597,6 +3719,7 @@ dense — loosen placement). Verify with 'pcb snapshot'.`,
 	// pcb.silk.add — create a free silkscreen string (board marking / credit / note).
 	{
 		var text string
+		var fontFamily string
 		var x, y, fontSize, lineWidth, rotation float64
 		var layer int
 		c := &cobra.Command{
@@ -3620,6 +3743,9 @@ restyle later with 'pcb silk-set'.`,
 				if cmd.Flags().Changed("font-size") {
 					payload["fontSize"] = fontSize
 				}
+				if cmd.Flags().Changed("font-family") {
+					payload["fontFamily"] = fontFamily
+				}
 				if cmd.Flags().Changed("line-width") {
 					payload["lineWidth"] = lineWidth
 				}
@@ -3630,6 +3756,7 @@ restyle later with 'pcb silk-set'.`,
 			},
 		}
 		c.Flags().StringVar(&text, "text", "", "the silkscreen text (required)")
+		c.Flags().StringVar(&fontFamily, "font-family", "default", "font family configured in EasyEDA (for example Arial)")
 		c.Flags().Float64Var(&x, "x", 0, "X position (mil)")
 		c.Flags().Float64Var(&y, "y", 0, "Y position (mil)")
 		c.Flags().IntVar(&layer, "layer", 3, "silk layer: 3=TOP_SILKSCREEN, 4=BOTTOM_SILKSCREEN")
@@ -3644,7 +3771,7 @@ restyle later with 'pcb silk-set'.`,
 	{
 		var ids string
 		var x, y, rotation, fontSize, lineWidth float64
-		var text, align, ref string
+		var text, align, ref, fontFamily string
 		c := &cobra.Command{
 			Use:   "silk-set",
 			Short: "Batch-adjust existing silk: position / rotation / size / text, or align to a reference",
@@ -3694,6 +3821,9 @@ document reload shows the OLD orientation (stale render) — judge success by 'p
 				if cmd.Flags().Changed("text") {
 					payload["text"] = text
 				}
+				if cmd.Flags().Changed("font-family") {
+					payload["fontFamily"] = fontFamily
+				}
 				if align != "" {
 					payload["align"] = align
 					if ref != "" {
@@ -3710,6 +3840,7 @@ document reload shows the OLD orientation (stale render) — judge success by 'p
 		c.Flags().Float64Var(&fontSize, "font-size", 0, "new font height (mil)")
 		c.Flags().Float64Var(&lineWidth, "line-width", 0, "new stroke width (mil)")
 		c.Flags().StringVar(&text, "text", "", "new text (designators: the value)")
+		c.Flags().StringVar(&fontFamily, "font-family", "", "new font family (for example Arial)")
 		c.Flags().StringVar(&align, "align", "", "align to --ref: center|mid|centerx|centery|left|right|top|bottom")
 		c.Flags().StringVar(&ref, "ref", "", "align reference: a designator, \"board\"/\"outline\", or \"fill\" (default board)")
 		pcb.AddCommand(c)
@@ -4206,12 +4337,8 @@ func runPcbClearVerified(cfg *appConfig, window string, payload map[string]any,
 
 	// Final proof: a dry-run count of what would STILL be deleted (usually 0).
 	//
-	// 写后回读放行(stale_read_optin.go)。`dryRun:true` 的 page.clear 只枚举不删,
-	// daemon 因此**按读判**(requestMutates 减去 dry-run 预览)—— 于是它撞在紧挨着
-	// 上面那次 pass2 clear 的 STALE_READ 门上。而这一读要数的正是 pass2 刚清完之后
-	// 还剩什么,是本命令自己写下的状态,属于合法写后回读。
-	// 不放行的后果是静默的:derr 被吞掉 → remainingAfterVerify 这把#121 唯一的
-	// 「证实/证伪」尺子从输出里消失,verified:true 却拿不出证据。
+	// `dryRun:true` 的 page.clear 只枚举不删；这里用它统计 pass2 后还剩多少，
+	// 为 verified 结论提供实际回读证据。
 	dryPayload, err := buildPcbClearPayload(only, true, noPreserveOutline, includeLocked)
 	if err == nil {
 		r3, derr := requestReadAfterWrite(cfg, "pcb.page.clear", window, dryPayload,

@@ -272,6 +272,48 @@ func newLibraryFootprintCmd(cfg *appConfig, stdout, stderr io.Writer, window *st
 		c.Flags().StringVar(&specPath, "spec", "", "JSON file containing pads[] and/or lines[] (required)")
 		group.AddCommand(c)
 	}
+	{
+		var uuid, libraryUUID, pointsJSON, ruleType, name string
+		var layer int
+		var lineWidth float64
+		var locked bool
+		c := &cobra.Command{
+			Use:   "region",
+			Short: "Add a saved rule/keep-out region inside a writable footprint",
+			Args:  cobra.NoArgs,
+			Example: `  easyeda lib footprint region --uuid <copy> --library <lib> \
+    --points '[[0,0],[1200,0],[1200,900],[0,900]]' --rule no-components --name LCD_BODY`,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if uuid == "" || libraryUUID == "" || pointsJSON == "" {
+					return fmt.Errorf("--uuid, --library and --points are required")
+				}
+				var points [][]float64
+				if err := json.Unmarshal([]byte(pointsJSON), &points); err != nil {
+					return fmt.Errorf("parse --points: %w", err)
+				}
+				if len(points) < 3 {
+					return fmt.Errorf("--points requires at least three [x,y] vertices")
+				}
+				payload := map[string]any{"uuid": uuid, "libraryUuid": libraryUUID, "points": points, "layer": layer, "ruleType": ruleType, "locked": locked}
+				if name != "" {
+					payload["name"] = name
+				}
+				if cmd.Flags().Changed("line-width") {
+					payload["lineWidth"] = lineWidth
+				}
+				return dispatch(cfg, "library.footprint.region_create", *window, payload, stdout, stderr)
+			},
+		}
+		c.Flags().StringVar(&uuid, "uuid", "", "writable footprint UUID (required)")
+		c.Flags().StringVar(&libraryUUID, "library", "", "writable library UUID (required)")
+		c.Flags().StringVar(&pointsJSON, "points", "", "JSON array of [x,y] vertices in footprint mil (required)")
+		c.Flags().IntVar(&layer, "layer", 12, "region layer; default MULTI=12")
+		c.Flags().StringVar(&ruleType, "rule", "no-components", "region rule name or numeric value")
+		c.Flags().StringVar(&name, "name", "", "optional region name")
+		c.Flags().Float64Var(&lineWidth, "line-width", 0, "optional display line width")
+		c.Flags().BoolVar(&locked, "locked", true, "lock the footprint region")
+		group.AddCommand(c)
+	}
 	return group
 }
 

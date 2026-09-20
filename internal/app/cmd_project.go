@@ -18,6 +18,43 @@ func newProjectCmd(cfg *appConfig, stdout, stderr io.Writer) *cobra.Command {
 	proj.PersistentFlags().StringVar(&window, "window", "", "EasyEDA window ID")
 
 	proj.AddCommand(
+		func() *cobra.Command {
+			var friendlyName, projectName, teamUUID, folderUUID, description string
+			var open bool
+			c := &cobra.Command{
+				Use:     "create",
+				Short:   "Create an EasyEDA project container through the official API",
+				Args:    cobra.NoArgs,
+				Example: `  easyeda project create --name "AT32F415 demo" --open`,
+				RunE: func(cmd *cobra.Command, args []string) error {
+					if friendlyName == "" {
+						return fmt.Errorf("--name is required")
+					}
+					payload := map[string]any{"friendlyName": friendlyName, "open": open}
+					if projectName != "" {
+						payload["projectName"] = projectName
+					}
+					if teamUUID != "" {
+						payload["teamUuid"] = teamUUID
+					}
+					if folderUUID != "" {
+						payload["folderUuid"] = folderUUID
+					}
+					if description != "" {
+						payload["description"] = description
+					}
+					return dispatch(cfg, "project.create", window, payload, stdout, stderr)
+				},
+			}
+			c.Flags().StringVar(&friendlyName, "name", "", "project display name (required)")
+			c.Flags().StringVar(&projectName, "internal-name", "", "optional internal project name")
+			c.Flags().StringVar(&teamUUID, "team", "", "target team/workspace UUID")
+			c.Flags().StringVar(&folderUUID, "folder", "", "target folder UUID")
+			c.Flags().StringVar(&description, "description", "", "project description")
+			c.Flags().BoolVar(&open, "open", false, "open the newly created project")
+			return c
+		}(),
+
 		// project info → project.current
 		&cobra.Command{
 			Use:   "info",

@@ -31,6 +31,21 @@ import {
 	summarizeActivePageConnectivity,
 } from './actions';
 
+function libraryDocumentControl(uuid: string, libraryUuid: string, documentType: number, tabId: string): Record<string, unknown> {
+	let current = { uuid: 'previous', parentLibraryUuid: 'previous-library', documentType: 0, tabId: 'previous-tab' };
+	return {
+		dmt_SelectControl: { getCurrentDocumentInfo: async () => current },
+		dmt_EditorControl: {
+			getSplitScreenIdByTabId: async () => 'split-1',
+			openLibraryDocument: async () => {
+				current = { uuid, parentLibraryUuid: libraryUuid, documentType, tabId };
+				return tabId;
+			},
+			activateDocument: async () => true,
+		},
+	};
+}
+
 // ─── Board-outline ARC decoding (#215) ─────────────────────────────────
 
 test('polygonSourceToPoints decodes signed ARC sweeps without taking the long way', () => {
@@ -117,6 +132,202 @@ test('pcb.outline.get returns the sampled containing ring instead of degrading e
 	finally { delete (globalThis as any).eda; }
 });
 
+test('pcb.outline.set preserves native ARC tokens in one locked 10mil polyline', async () => {
+	const source: Array<string | number> = [
+		10, 0, 'L', 90, 0, 'ARC', 90, 100, 10,
+		'L', 100, 70, 'ARC', 90, 90, 80,
+		'L', 10, 80, 'ARC', 90, 0, 70,
+		'L', 0, 10, 'ARC', 90, 10, 0,
+	];
+	let polygonSource: unknown;
+	let createArgs: unknown[] = [];
+	(globalThis as any).eda = {
+		pcb_MathPolygon: { createPolygon: (src: unknown) => { polygonSource = src; return { src }; } },
+		pcb_PrimitivePolyline: {
+			getAll: async () => [],
+			delete: async () => true,
+			create: async (...args: unknown[]) => {
+				createArgs = args;
+				return {
+					getState_PrimitiveId: () => 'outline-1',
+					getState_LineWidth: () => args[3],
+					getState_PrimitiveLock: () => args[4],
+				};
+			},
+		},
+		pcb_PrimitiveLine: { getAll: async () => [], delete: async () => true },
+		pcb_PrimitiveArc: { getAll: async () => [], delete: async () => true },
+		pcb_PrimitiveComponent: { getAll: async () => [] },
+		pcb_Document: { zoomToBoardOutline: async () => true },
+	};
+	try {
+		const res: any = await runAction('pcb.outline.set', { source, lineWidth: 10 });
+		assert.deepEqual(polygonSource, source, 'createPolygon must receive the ARC source unchanged');
+		assert.equal(createArgs[1], 11);
+		assert.equal(createArgs[3], 10);
+		assert.equal(createArgs[4], true);
+		assert.equal(res.result.segments, 4);
+		assert.equal(res.result.arcs, 4);
+		assert.equal(res.result.width, 100);
+		assert.equal(res.result.height, 80);
+		assert.ok(Math.abs(res.result.radius - 10) < 1e-9);
+		assert.equal(res.result.locked, true);
+		assert.equal(res.result.outlineFormat, 'arc-polyline');
+	}
+	finally { delete (globalThis as any).eda; }
+});
+
+test('pcb.outline.set refuses to create a replacement when an old outline cannot be deleted', async () => {
+	const source: Array<string | number> = [0, 0, 'L', 100, 0, 100, 80, 0, 80, 0, 0];
+	let creates = 0;
+	const old = { getState_PrimitiveId: () => 'locked-outline' };
+	(globalThis as any).eda = {
+		pcb_MathPolygon: { createPolygon: (src: unknown) => ({ src }) },
+		pcb_PrimitivePolyline: {
+			getAll: async () => [old],
+			delete: async () => false,
+			create: async () => { creates++; return null; },
+		},
+		pcb_PrimitiveLine: { getAll: async () => [], delete: async () => true },
+		pcb_PrimitiveArc: { getAll: async () => [], delete: async () => true },
+	};
+	try {
+		await assert.rejects(
+			() => runAction('pcb.outline.set', { source, lineWidth: 10 }),
+			(err: any) => /no replacement was created/.test(err.message),
+		);
+		assert.equal(creates, 0);
+	}
+	finally { delete (globalThis as any).eda; }
+});
+
+test('pcb.outline.set confirms deleted outline IDs are absent before replacement', async () => {
+	const source: Array<string | number> = [0, 0, 'L', 100, 0, 100, 80, 0, 80, 0, 0];
+	let creates = 0;
+	const old = { getState_PrimitiveId: () => 'stale-outline' };
+	(globalThis as any).eda = {
+		pcb_MathPolygon: { createPolygon: (src: unknown) => ({ src }) },
+		pcb_PrimitivePolyline: {
+			getAll: async () => [old],
+			delete: async () => true,
+			create: async () => { creates++; return null; },
+		},
+		pcb_PrimitiveLine: { getAll: async () => [], delete: async () => true },
+		pcb_PrimitiveArc: { getAll: async () => [], delete: async () => true },
+	};
+	try {
+		await assert.rejects(
+			() => runAction('pcb.outline.set', { source, lineWidth: 10 }),
+			(err: any) => /remained after delete/.test(err.message),
+		);
+		assert.equal(creates, 0);
+	}
+	finally { delete (globalThis as any).eda; }
+});
+
+test('pcb.outline.get reports center-line dimensions separately from rendered bbox', async () => {
+	const source: Array<string | number> = [
+		10, 0, 'L', 90, 0, 'ARC', 90, 100, 10,
+		'L', 100, 70, 'ARC', 90, 90, 80,
+		'L', 10, 80, 'ARC', 90, 0, 70,
+		'L', 0, 10, 'ARC', 90, 10, 0,
+	];
+	const primitive = {
+		getState_PrimitiveId: () => 'outline-1',
+		getState_Polygon: () => ({ getSource: () => source }),
+		getState_LineWidth: () => 10,
+		getState_PrimitiveLock: () => true,
+	};
+	(globalThis as any).eda = {
+		pcb_PrimitivePolyline: { getAll: async () => [primitive] },
+		pcb_PrimitiveLine: { getAll: async () => [] },
+		pcb_PrimitiveArc: { getAll: async () => [] },
+		pcb_Primitive: { getPrimitivesBBox: async () => ({ minX: -5, maxX: 105, minY: -5, maxY: 85 }) },
+	};
+	try {
+		const res: any = await runAction('pcb.outline.get', {});
+		assert.deepEqual(res.result.bbox, { minX: -5, maxX: 105, minY: -5, maxY: 85 });
+		assert.deepEqual(res.result.centerlineBBox, { minX: 0, maxX: 100, minY: 0, maxY: 80 });
+		assert.equal(res.result.width, 100);
+		assert.equal(res.result.height, 80);
+		assert.ok(Math.abs(res.result.radius - 10) < 1e-9);
+		assert.equal(res.result.lineWidth, 10);
+		assert.equal(res.result.locked, true);
+		assert.equal(res.result.arcs, 0, 'legacy primitive arc count remains backward compatible');
+		assert.equal(res.result.legacyArcs, 0);
+		assert.equal(res.result.sourceArcs, 4);
+		assert.equal(res.result.nativeArcs, 4);
+		assert.equal(res.result.sourceSegments, 4);
+	}
+	finally { delete (globalThis as any).eda; }
+});
+
+test('pcb.outline.get recognizes the ARC-first source persisted by EasyEDA', async () => {
+	const source: Array<string | number> = [
+		118.11, 0,
+		'ARC', -90, 0, 118.11,
+		'L', 0, 1850.39,
+		'ARC', -90, 118.11, 1968.5,
+		'L', 3425.2, 1968.5,
+		'ARC', -90, 3543.31, 1850.39,
+		'L', 3543.31, 118.11,
+		'ARC', -90, 3425.2, 0,
+		'L', 118.11, 0,
+	];
+	const primitive = {
+		getState_PrimitiveId: () => 'persisted-outline',
+		getState_Polygon: () => ({ getSource: () => source }),
+		getState_LineWidth: () => 10,
+		getState_PrimitiveLock: () => true,
+	};
+	(globalThis as any).eda = {
+		pcb_PrimitivePolyline: { getAll: async () => [primitive] },
+		pcb_PrimitiveLine: { getAll: async () => [] },
+		pcb_PrimitiveArc: { getAll: async () => [] },
+		pcb_Primitive: { getPrimitivesBBox: async () => ({ minX: -5, maxX: 3548.31, minY: -5, maxY: 1973.5 }) },
+	};
+	try {
+		const res: any = await runAction('pcb.outline.get', {});
+		assert.ok(Math.abs(res.result.radius - 118.11) < 1e-9);
+		assert.equal(res.result.width, 3543.31);
+		assert.equal(res.result.height, 1968.5);
+		assert.equal(res.result.sourceSegments, 4);
+		assert.equal(res.result.sourceArcs, 4);
+		assert.equal(res.result.nativeArcs, 4);
+	}
+	finally { delete (globalThis as any).eda; }
+});
+
+test('pcb origin get/set wraps canvas-origin API and verifies readback without geometry mutation', async () => {
+	let origin = { offsetX: 25, offsetY: -50 };
+	let setArgs: number[] = [];
+	(globalThis as any).eda = {
+		pcb_Document: {
+			getCanvasOrigin: async () => ({ ...origin }),
+			setCanvasOrigin: async (x: number, y: number) => {
+				setArgs = [x, y];
+				origin = { offsetX: x, offsetY: y };
+				return true;
+			},
+		},
+	};
+	try {
+		const before: any = await runAction('pcb.origin.get', {});
+		assert.equal(before.result.offsetX, 25);
+		assert.equal(before.result.offsetY, -50);
+		assert.equal(before.result.affectsGeometry, false);
+
+		const after: any = await runAction('pcb.origin.set', { offsetX: 118.11, offsetY: 118.11 });
+		assert.deepEqual(setArgs, [118.11, 118.11]);
+		assert.deepEqual(after.result.previous, { offsetX: 25, offsetY: -50 });
+		assert.equal(after.result.offsetX, 118.11);
+		assert.equal(after.result.offsetY, 118.11);
+		assert.equal(after.result.verified, true);
+		assert.equal(after.result.affectsGeometry, false);
+	}
+	finally { delete (globalThis as any).eda; }
+});
+
 // ─── document.open: keep navigation on a known editor split ──────────────
 
 test('exec_js compile rejection never runs even the valid prefix', async (t) => {
@@ -194,6 +405,16 @@ test('document.open uses the active tab\'s official split ID without guessing', 
 	const res: any = await runAction('document.open', { uuid: 'pcb-target' });
 	assert.deepEqual(fx.splitReads, ['tab-old']);
 	assert.deepEqual(fx.opens, [['pcb-target', 'official-split-42']]);
+	assert.deepEqual(res.result, { tabId: 'tab-target', ready: true });
+});
+
+test('document.open uses a caller-preserved split without consulting a post-close blank tab', async (t) => {
+	const fx = installDocumentOpenStub(t, { beforeTabId: 'about-blank-tab', split: 'wrong-post-close-split' });
+	const res: any = await runAction('document.open', {
+		uuid: 'pcb-target', splitScreenId: 'target-split-before-close',
+	});
+	assert.deepEqual(fx.splitReads, [], 'an explicit pre-close split is already authoritative');
+	assert.deepEqual(fx.opens, [['pcb-target', 'target-split-before-close']]);
 	assert.deepEqual(res.result, { tabId: 'tab-target', ready: true });
 });
 
@@ -290,7 +511,7 @@ test('library footprint build opens the asset, creates pads/lines and verifies I
 	const padIds: string[] = [];
 	const lineIds: string[] = [];
 	(globalThis as any).eda = {
-		lib_Footprint: { openInEditor: async () => 'TAB-FP' },
+		...libraryDocumentControl('FP-1', 'LIB-F', 4, 'TAB-FP'),
 		pcb_PrimitivePad: {
 			getAllPrimitiveId: async () => [],
 			create: async (_layer: number, number: string) => {
@@ -336,7 +557,7 @@ test('library footprint build refuses a replay before creating duplicate geometr
 	const lineIds: string[] = [];
 	let saves = 0;
 	(globalThis as any).eda = {
-		lib_Footprint: { openInEditor: async () => 'TAB-FP' },
+		...libraryDocumentControl('FP-1', 'LIB-F', 4, 'TAB-FP'),
 		pcb_PrimitivePad: {
 			getAllPrimitiveId: async () => [...padIds],
 			create: async (_layer: number, number: string) => {
@@ -380,7 +601,7 @@ test('library symbol build refuses a non-empty target with zero new primitives',
 	let creates = 0;
 	let saves = 0;
 	(globalThis as any).eda = {
-		lib_Symbol: { openInEditor: async () => 'TAB-SYM' },
+		...libraryDocumentControl('SYM-1', 'LIB-S', 2, 'TAB-SYM'),
 		sch_PrimitivePin: {
 			getAllPrimitiveId: async () => ['pin-existing'],
 			create: async () => { creates++; return { getState_PrimitiveId: () => 'pin-new' }; },
@@ -416,7 +637,7 @@ test('library symbol build refuses a non-empty target with zero new primitives',
 test('library footprint build fails closed when target inventory cannot be read', async () => {
 	let creates = 0;
 	(globalThis as any).eda = {
-		lib_Footprint: { openInEditor: async () => 'TAB-FP' },
+		...libraryDocumentControl('FP-1', 'LIB-F', 4, 'TAB-FP'),
 		pcb_PrimitivePad: {
 			getAllPrimitiveId: async () => { throw new Error('inventory unavailable'); },
 			create: async () => { creates++; return { getState_PrimitiveId: () => 'pad-new' }; },

@@ -319,8 +319,9 @@ auto-router handles worst are done deterministically FIRST, then locked:
              rip-up tier cannot destroy the guaranteed copper.
 
 Then hand the REST to the normal tier (route-short / user-clicked native
-auto-route per the P7 ladder). Same stage gate as route-short; --dry-run plans
-and identifies without mutating. A missing/stale copper-layer read or a conflict
+auto-route per the P7 ladder). Workflow stage records are informational; live
+stackup and routing evidence drive this command. --dry-run plans and identifies
+without mutating. A missing/stale copper-layer read or a conflict
 with --spec stackup.layers refuses before routing; no default layer count is assumed.`,
 		Example: `  easyeda pcb route-critical --project ceshi --dry-run
   easyeda pcb route-critical --project ceshi
@@ -370,12 +371,6 @@ with --spec stackup.layers refuses before routing; no default layer count is ass
 				out["copperLayerCount"] = copper
 				out["copperLayerCountSource"] = copperSrc
 			}
-			if !dryRun {
-				if err := gateRouteCommand(cfg, *window, "route-critical", forceReason, forceUnsafeReason, stderr); err != nil {
-					return err
-				}
-			}
-
 			// ── 1. power ───────────────────────────────────────────────────
 			// Only post-power reads may opt into observing this command's writes.
 			powerWrote := false
@@ -396,19 +391,8 @@ with --spec stackup.layers refuses before routing; no default layer count is ass
 				powerWrote = !dryRun
 			}
 
-			// rcAfterPower 是第 2 步各处读的**条件**放行理由(stale_read_optin.go)。
-			//
-			// 为什么是条件的:第 1 步的两条配方都以 pcb.pour.rebuild 收尾,而
-			// rebuild 会**清掉** STALE_READ 门(daemon/stalereads.go pcbStaleClears)
-			// —— 所以顺风路径上第 2 步本来就读得到。但 rebuild 只是 best-effort:
-			// power-planes 里它失败只打一行警告,power-pour 里 created==0 干脆不调用。
-			// 那两条岔路上门是关着的,而第 2 步是**整块**被拦(components.list 一失败
-			// 就 return err),整条命令死在自己刚写的铜上。
-			//
-			// 为什么不无条件放行:--skip-power / --dry-run 时第 1 步一个字节都没写,
-			// 此刻若还带着放行位,读到的就不是「本命令刚写下的东西」,而是把一块**开跑
-			// 前就脏**的板子的旧状态放进来当规划输入 —— 那正是铁律 5 要防的。
-			// 空理由 = staleReadOptIn 原样返回 cfg = 不放行。
+			// rcAfterPower 保留第 2 步各处读取的语境。第 1 步确实写铜时，后续读取
+			// 会明确标识是在核对本命令刚写的对象；最终结果仍以 save/reload/readback 为准。
 			rcAfterPower := func(what string) string {
 				if !powerWrote {
 					return ""
@@ -539,8 +523,8 @@ with --spec stackup.layers refuses before routing; no default layer count is ass
 	c.Flags().BoolVar(&skipDiff, "skip-diff", false, "skip the diff-pair step")
 	c.Flags().BoolVar(&noLock, "no-lock", false, "do not lock the routed pair nets")
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "plan + identify without mutating")
-	c.Flags().StringVar(&forceReason, "force", "", "bypass SOFT gate gaps only (audited, per-run) — same tiering as route-short (#132)")
-	c.Flags().StringVar(&forceUnsafeReason, "force-unsafe", "", "bypass EVERYTHING incl. an unconfirmed skeleton (audited, per-run)")
+	c.Flags().StringVar(&forceReason, "force", "", "deprecated compatibility option; workflow stages no longer gate routing")
+	c.Flags().StringVar(&forceUnsafeReason, "force-unsafe", "", "deprecated compatibility option; workflow stages no longer gate routing")
 	c.Flags().StringVar(&specPath, "spec", "", "S0 spec JSON — its stackup.layers is AUTHORITATIVE: when the live board\n"+
 		"disagrees the command refuses instead of re-stacking the board")
 	c.Flags().BoolVar(&allowStackupChange, "allow-stackup-change", false,

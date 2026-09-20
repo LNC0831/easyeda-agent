@@ -446,11 +446,11 @@ func TestRefineLoop_BlockingIssuesSurfaceInWarnings(t *testing.T) {
 	}
 }
 
-func TestRefineLoop_ConfirmedTierPartsAreImmovable(t *testing.T) {
-	// 已签字的 tier-1/2 是不可动集合（#153：「stage confirm-tier 已确认的功能位
-	// 一律不动」）。写一份带 tier-2 签字（C2）的 workflow 状态到重定向后的目录，
-	// 验证环真的读它并把 C2 从计划里剔除。
-	cfg, d, done := newRefineLoopDaemon(t, refineLoopBoard())
+func TestRefineLoop_IgnoresHistoricalTierPermissions(t *testing.T) {
+	// Workflow tier records are retained for compatibility, but they are no
+	// longer execution permissions. Seed a historical tier-2 record for C2 and
+	// prove refine still plans all unlocked parts from the live board.
+	cfg, _, done := newRefineLoopDaemon(t, refineLoopBoard())
 	defer done()
 	st := &pcbStageState{Project: "refinetest", Confirmed: map[pcbStage]bool{}}
 	st.ConfirmTier(2, &stageTierConfirm{At: nowRFC3339(), Designators: []string{"C2"}})
@@ -459,21 +459,21 @@ func TestRefineLoop_ConfirmedTierPartsAreImmovable(t *testing.T) {
 	}
 
 	rep := runRefineForTest(t, cfg, true)
-	if rep.Immovable != 1 {
-		t.Fatalf("immovable = %d, want the tier-2 C2 alone", rep.Immovable)
+	if rep.Immovable != 0 {
+		t.Fatalf("immovable = %d, want no live editor locks", rep.Immovable)
 	}
-	if len(rep.Steps) != 1 || len(rep.Steps[0].Moves) != 3 {
-		t.Fatalf("want a 3-move plan (C2 excluded), got %+v", rep.Steps)
+	if len(rep.Steps) != 1 || len(rep.Steps[0].Moves) != 4 {
+		t.Fatalf("want a 4-move plan from live geometry, got %+v", rep.Steps)
 	}
+	foundC2 := false
 	for _, m := range rep.Steps[0].Moves {
 		if m.Designator == "C2" {
-			t.Error("tier-2 confirmed C2 must not be planned for a move")
+			foundC2 = true
 		}
 	}
-	if strings.Contains(strings.Join(rep.Warnings, "\n"), "no confirmed placement tiers") {
-		t.Error("tier state was found — the no-tiers degradation warning must not fire")
+	if !foundC2 {
+		t.Error("historical tier-2 C2 unexpectedly blocked a live refinement plan")
 	}
-	_ = d
 }
 
 func TestRefineLoop_ApplyFailureRollsBackAttempted(t *testing.T) {

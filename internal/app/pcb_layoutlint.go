@@ -9,7 +9,7 @@ package app
 // and counts how many cross-net ratline segments GEOMETRICALLY CROSS. Crossings are
 // the classic single-layer routability killer — two nets whose shortest links cross
 // can't both stay on one layer without a via/detour. Combined with overlap (fatal)
-// and outside-outline, that yields a 0-100 score to gate/compare placements.
+// and outside-outline, that yields a 0-100 score for comparing placements.
 //
 // Pure core here (unit-testable, no I/O); the CLI command + live fetch/render is in
 // cmd_pcb.go / the runner below. Reuses overlapExtent/rectGap/round2 from
@@ -23,7 +23,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 )
 
 // pcbLPad is a placed pad with its net and center (mil). Layer is the pad's
@@ -150,8 +149,8 @@ type pcbLayoutReport struct {
 	// Sides counts components per board side — the evidence that overlap was
 	// judged PER SIDE (a double-sided board shows both entries).
 	Sides map[string]int `json:"sides,omitempty"`
-	// AccessMil / AccessBlocked: hand-solder iron-access check (issue #99),
-	// populated only when the gate runs with a hand-solder assembly profile.
+	// AccessMil / AccessBlocked: hand-solder iron-access diagnostic (issue #99),
+	// populated when compatibility --gate finds a hand-solder assembly profile.
 	AccessMil     float64             `json:"accessMil,omitempty"`
 	AccessBlocked []pcbLAccessFinding `json:"accessBlocked,omitempty"`
 
@@ -754,12 +753,10 @@ func segCross(e, f ratLink) (x, y float64, ok bool) {
 
 // runPcbLayoutLint fetches the live placement (bbox + pads), the board outline, and
 // the DRC clearance, analyzes, renders, and returns a non-nil error when the layout
-// is not OK (overlap / off-board) so the command exits non-zero (gate-able).
-// pcbLayoutGateOpts configures the routability gate that layout-lint applies on
-// top of the overlap/off-board checks (issue #97): a minimum score and a maximum
-// cross-net ratline crossing count. When gate is enabled and the layout passes,
-// the project's pre_route_passed stage is confirmed and a gate summary is
-// persisted for the route commands to consult.
+// is not OK (short / overlap / off-board) so the command exits non-zero.
+// pcbLayoutGateOpts is the legacy --gate compatibility view: it computes and
+// reports historical thresholds, but does not authorize routing, persist a
+// workflow stage, or turn a score/crossing threshold into a refusal.
 type pcbLayoutGateOpts struct {
 	gate         bool
 	project      string
@@ -770,22 +767,17 @@ type pcbLayoutGateOpts struct {
 func runPcbLayoutLint(cfg *appConfig, window string, minGapMil float64, asJSON bool, gate pcbLayoutGateOpts, stdout, stderr io.Writer) error {
 	var assembly *pcbAssemblyProfile
 	if gate.gate {
-		// Key the persisted gate state by the real project identity (matches the
-		// daemon-side gate and the confirm commands) — not the raw --project flag,
-		// which may be empty when routing by --window.
+		// Reuse an existing assembly profile when available so old invocations
+		// retain their useful spacing/access diagnostics. Missing, corrupt, or
+		// unresolvable workflow state is non-blocking historical metadata.
 		if resolved, rerr := resolveStageProject(cfg, window); rerr == nil {
 			gate.project = resolved
 		}
-		st, serr := loadPcbStageState(gate.project)
-		if serr != nil {
-			return fmt.Errorf("load assembly profile: %w", serr)
-		}
-		if st.Assembly == nil {
-			return fmt.Errorf("assembly profile is required for --gate; run `pcb stage set-assembly --profile hand-solder|reflow`")
-		}
-		assembly = st.Assembly
-		if assembly.MinGapMil > minGapMil {
-			minGapMil = assembly.MinGapMil
+		if st, serr := loadPcbStageState(gate.project); serr == nil && st.Assembly != nil {
+			assembly = st.Assembly
+			if assembly.MinGapMil > minGapMil {
+				minGapMil = assembly.MinGapMil
+			}
 		}
 	}
 	res, err := requestAction(cfg, "pcb.components.list", window, map[string]any{"includeBBox": true, "includePads": true})
@@ -865,18 +857,12 @@ func runPcbLayoutLint(cfg *appConfig, window string, minGapMil float64, asJSON b
 		rep.AccessBlocked = analyzeSolderAccess(comps, assembly.LargePadAccessMil)
 	}
 
-	// Routability gate (issue #97): the base report already flags overlap /
-	// off-board; the gate adds score + crossings thresholds and — on a pass —
-	// confirms the project's pre_route_passed stage so route commands unlock.
+	// Legacy threshold diagnostic: the base report remains the source of factual
+	// geometry errors; score and crossing thresholds are explanatory only.
 	var gateVerdict *routeGateVerdict
 	if gate.gate {
 		gv := evalLayoutGate(rep, gate)
 		gateVerdict = &gv
-		if gv.Pass {
-			if perr := recordLayoutGatePass(gate.project, rep, assembly); perr != nil {
-				fmt.Fprintf(stderr, "⚠️  gate passed but could not persist pre_route_passed: %v\n", perr)
-			}
-		}
 	}
 
 	if asJSON {
@@ -899,14 +885,11 @@ func runPcbLayoutLint(cfg *appConfig, window string, minGapMil float64, asJSON b
 		return fmt.Errorf("layout not routable-ready: %d cross-net short, %d overlap, %d off-board",
 			len(rep.Shorts), len(rep.Overlaps), len(rep.OutsideOutline))
 	}
-	if gateVerdict != nil && !gateVerdict.Pass {
-		return fmt.Errorf("routability gate FAILED: %s", strings.Join(gateVerdict.Reasons, "; "))
-	}
 	return nil
 }
 
-// routeGateVerdict is the machine-readable result of the layout-lint routability
-// gate (emitted in --json, stored on pass).
+// routeGateVerdict is the legacy-compatible machine-readable threshold result
+// emitted by layout-lint --gate. It is diagnostic and is never persisted.
 type routeGateVerdict struct {
 	Pass          bool     `json:"pass"`
 	Score         int      `json:"score"`
@@ -947,37 +930,14 @@ func evalLayoutGate(rep pcbLayoutReport, opt pcbLayoutGateOpts) routeGateVerdict
 	return v
 }
 
-// recordLayoutGatePass persists pre_route_passed + the gate snapshot.
-func recordLayoutGatePass(project string, rep pcbLayoutReport, assembly *pcbAssemblyProfile) error {
-	st, err := loadPcbStageState(project)
-	if err != nil {
-		return err
-	}
-	profile := ""
-	if assembly != nil {
-		profile = assembly.Profile
-	}
-	st.Layout = &pcbLayoutGateSummary{
-		Score: rep.Score, Verdict: rep.Verdict,
-		Overlaps: len(rep.Overlaps), Shorts: len(rep.Shorts), OffBoard: len(rep.OutsideOutline),
-		CrossingCount: rep.CrossingCount, MinGapMil: rep.MinGapMil,
-		TightPairs: len(rep.TightPairs),
-		AccessMil:  rep.AccessMil, AccessBlocked: len(rep.AccessBlocked),
-		Assembly: profile, At: time.Now().Format(time.RFC3339),
-	}
-	st.Confirm(stagePreRoutePassed, "gate-pass",
-		fmt.Sprintf("layout-lint score=%d crossings=%d", rep.Score, rep.CrossingCount))
-	return savePcbStageState(st)
-}
-
-// renderLayoutGate prints the human-readable gate verdict.
+// renderLayoutGate prints the human-readable legacy threshold diagnostic.
 func renderLayoutGate(v routeGateVerdict, w io.Writer) {
 	if v.Pass {
-		fmt.Fprintf(w, "\nroutability gate: ✅ PASS (score %d ≥ %d, crossings %d ≤ %d) → pre_route_passed confirmed\n",
+		fmt.Fprintf(w, "\nroutability diagnostic: thresholds met (score %d ≥ %d, crossings %d ≤ %d); no workflow state written\n",
 			v.Score, v.MinScore, v.CrossingCount, v.MaxCrossings)
 		return
 	}
-	fmt.Fprintf(w, "\nroutability gate: ❌ FAIL — %s\n", strings.Join(v.Reasons, "; "))
+	fmt.Fprintf(w, "\nroutability diagnostic: thresholds missed — %s (informational; routing remains available)\n", strings.Join(v.Reasons, "; "))
 }
 
 func renderPcbLayoutReport(rep pcbLayoutReport, w io.Writer) {

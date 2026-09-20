@@ -32,7 +32,7 @@
 | **PCB 布局与布线** | 模块感知自动布局、板框贴合、规则感知短线布线、过孔、铺铜、4 层电源平面、天线 keepout |
 | **丝印调整** | 自动避开焊盘、器件体、禁区、板框和其他标签；添加板注、接口名、LED 极性及 SVG Logo |
 | **复用成熟电路** | 从内置电路块库复用 CH340、ESP32 自动下载、按键、USB Hub、降压等拓扑，放件、连线并对账 |
-| **检查与交付** | 原理图严格门禁、PCB DRC/DFM、BOM、网表、制造文件、截图、审计日志和显式保存 |
+| **检查与交付** | 原理图连接与几何检查、PCB DRC/DFM、BOM、网表、制造文件、截图、审计日志和显式保存 |
 
 完整能力与状态见 [功能清单](docs/FEATURES.md)，命令索引见
 [原理图 CLI](docs/cli/schematic.md) 和 [PCB CLI](docs/cli/pcb.md)。
@@ -89,7 +89,7 @@ bridge-check 和官方 DRC。最后输出替换清单和仍无法确定的器件
 
 ```text
 请使用 easyeda-agent 全面检查当前原理图和 PCB。先读取真实器件、引脚、网络、板框、叠层和
-DRC 规则，再修复可以确定的问题。不要凭截图猜连接；所有修改完成后回读对账、运行严格门禁、
+DRC 规则，再修复可以确定的问题。不要凭截图猜连接；所有修改完成后回读对账、运行连接/几何/DRC 检查、
 保存，并把仍需人工决策的问题单独列出。
 ```
 
@@ -160,15 +160,15 @@ curl -fsSL https://raw.githubusercontent.com/zhoushoujianwork/easyeda-agent/main
 easyeda daemon start
 ```
 
-打开目标 EasyEDA 工程，并启用 **设置 → 允许外部交互**。新 Agent 会话首先运行：
+打开目标 EasyEDA 工程，并启用 **设置 → 允许外部交互**。开始操作前运行健康检查；需要安装对账时再显式运行版本检查：
 
 ```bash
-easyeda update --check --exit-code
 easyeda health
+easyeda update --check --exit-code  # 可选：安装版本对账
 ```
 
-CLI、Skill 和运行中的 daemon 必须与最新发布版一致；Connector 需位于相同 major.minor
-兼容线。升级任何组件后新开 Agent 会话，让客户端重新加载 Skill。
+版本差异会作为诊断输出，不作为设计动作的许可。Connector 若缺少当前动作或协议不兼容，
+按诊断升级对应组件；Skill 内容更新后让客户端重新加载它。
 
 更详细的安装、升级、代理和排障步骤见 [快速开始](docs/quick-start.md)。
 
@@ -179,7 +179,7 @@ CLI、Skill 和运行中的 daemon 必须与最新发布版一致；Connector �
 
 - 写入前检查目标工程、页面、器件身份和源数据；
 - 写入后回读引脚、网络、几何和对象绑定；
-- 原理图 `layout-lint → check → bridge-check → DRC` 严格门禁；
+- 原理图 `layout-lint → check → bridge-check → DRC` 分项报告事实与差异；
 - PCB 使用真实 DRC 规则完成布局、布线、铺铜和制造检查；
 - 对部分成功、超时和无法确认的结果停止盲目重试；
 - 自动保存作为安全网，关键节点仍显式保存。

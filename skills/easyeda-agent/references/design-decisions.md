@@ -1,6 +1,6 @@
 # 设计决策目录 (Design Decisions)
 
-本文是 [ADR-0002](https://github.com/zhoushoujianwork/easyeda-agent/blob/main/docs/adr/0002-design-proposal-and-interaction-modes.md) 落地的决策点清单，供 [`design-flow.md`](./design-flow.md) 的 **S0 设计方案书**阶段在放第一个元件之前，把这些**真实权衡**摊开给用户拍板，而不是 agent 悄悄选一个默认值再往后走。判据只有一条：**用户的回答会不会改变实际做法**——会才进本文，不会（只有唯一正确答案）就是 guardrail，继续以硬门禁形式内置在 `pcb-layout-conventions.md` / `auto-layout-sop.md` / `design-flow.md` 里（save 纪律、mutation 后 `doc reload`、layout-lint/DRC 硬门、PLANE 生成顺序、天线 keepout 必须覆盖全层等），本文**不重复**这些内容。每个决策点固定给出：决策问题、选项对比（优点/坑）、推荐默认、判据（一句话说清何时答案会变）、来源。「来源」只引**随 skill 分发**的 references 文件；个别仅存于项目开发机的实测数据以「实测沉淀」标注——其事实已完整写入表格本身，不依赖任何外部文件。
+本文是 [ADR-0002](https://github.com/zhoushoujianwork/easyeda-agent/blob/main/docs/adr/0002-design-proposal-and-interaction-modes.md) 落地的决策点清单，供 [`design-flow.md`](./design-flow.md) 的 **S0 设计方案书**记录会改变实际做法的权衡。只有唯一正确答案的内容作为输入校验或事实检查保留，例如保存纪律、写后 reload、layout-lint/DRC、PLANE 生成顺序和全层天线 keepout；这些检查报告问题，但不构成阶段许可。每个决策点固定给出：问题、选项对比、推荐默认、判据和来源。「来源」只引随 Skill 分发的 references 文件；项目开发机实测以「实测沉淀」标注，事实完整写入表格，不依赖外部文件。
 
 ---
 
@@ -21,7 +21,7 @@
 
 **推荐默认**：4 层（`esp32MiniRequire.md` 一类客户需求默认按 4 层落地）。
 
-**判据**：板上存在 ≥2 个需要各自铺铜的电源/地网络，或对 EMI、回流完整性、走线密度有明确要求 → 选 4 层；只有单一电源+GND、网络稀疏、成本/尺寸优先于性能 → 2 层可接受，但需接受 No-Connection 残留及后续人工修补的代价。
+**判据**：板上存在 ≥2 个需要各自铺铜的电源/地网络，或对 EMI、回流完整性、走线密度有明确要求 → 选 4 层；只有单一电源+GND、网络稀疏、成本/尺寸优先于性能 → 2 层可接受，但必须由 typed 布线能力消除 No-Connection，不能依赖后续手工修补。
 
 **来源**：`pcb-layout-conventions.md` §7.7；2 层同层多网互挖岛/残留 No-Connection 数据为实测沉淀
 

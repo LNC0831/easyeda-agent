@@ -14,11 +14,11 @@ Skill/Agent：在目标源数据中表达电气事实、核心/外围归属、�
               ↓
 Go 纯计算：区内 layout-plan → 纸张 layout-sheet-plan → 数据校验
               ↓
-固定渲染 / compose --layout-page → 受保护 Apply
+固定渲染 / compose --layout-page → 可检查的 Apply 队列
               ↓
 Go CLI/daemon ── typed actions / WebSocket ── Connector ── 官方 eda.* API
               ↓
-官方原始回读 → 与目标对账、检查覆盖和严格门禁 → 显式保存
+官方原始回读 → 与目标对账、列出检查覆盖和差异 → 显式保存/重载回读
               └─ 发现差异：修源数据/采集器/算法，重算受影响阶段
 ```
 
@@ -32,7 +32,7 @@ Go CLI/daemon ── typed actions / WebSocket ── Connector ── 官方 ed
 
 CLI 以 Cobra 子命令暴露功能；布局内核消费数据、返回完整结果或明确失败，不操作编辑器。
 区内负责核心/外围、连接与避碰；纸张层只选择和平移完整合法区域。
-检查器基于原始几何/连接证据报告对象与规则，缺测不是零问题，软评分不替代硬门。
+检查器基于原始几何/连接证据报告对象与规则，缺测不是零问题，评分也不替代具体事实。
 Compose 固定转换已确认几何，Apply 执行和回读，不在写入阶段偷偷重设计。
 
 ### daemon / Connector
@@ -41,6 +41,10 @@ daemon 已实现长连接、端口管理、多窗口路由、输入校验、审�
 Connector 在宿主内将 typed actions 转成官方 `eda.*` 调用，并序列化真实状态和错误。
 运行时 primitiveId 是操作句柄，不替代 canonical 稳定身份。采集不足应修适配器，
 不能填默认坐标/空数组制造成功。autosave 不替代检查点的 `saved:true` 证据。
+
+workflow/stage、版本对账、布局评分和 staleRisk 是兼容诊断面，不是 action 的执行许可。
+需要权威最终读的批次负责 save → real reload → readback；刷新失败时结果保持 incomplete，
+不能把 reload 前的缓存或旧阶段记录当作完成证据。
 
 ## 单一事实与能力边界
 
@@ -60,3 +64,6 @@ Connector 在宿主内将 typed actions 转成官方 `eda.*` 调用，并序列�
 `group/zone/sheet tidy/move` 是存量维护能力，不是新设计的主架构；小修也须同步源数据。
 [旧层级设计](schematic-layout-hierarchy.md)、ADR-0003/0004 保留历史背景和移动安全经验，
 不能覆盖现行数据主链，也不提供事务回滚保证。原理图任务不自动延伸为 PCB。
+
+旧 `stage confirm-*`、`layout-lint --gate`、`--force/--force-unsafe` 与版本 skip 参数为脚本兼容
+保留；新样例不依赖它们授权执行。安装对账使用显式 `easyeda update --check --exit-code`。

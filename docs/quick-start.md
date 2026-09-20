@@ -1,6 +1,6 @@
 # 快速开始 & 使用注意事项
 
-easyeda-agent 有三个必须配套并保持同版的组成部分；EasyEDA Pro 是运行宿主：
+easyeda-agent 有三个配套组成部分；EasyEDA Pro 是运行宿主：
 
 | 部件 | 是什么 | 装在哪 |
 |---|---|---|
@@ -9,8 +9,8 @@ easyeda-agent 有三个必须配套并保持同版的组成部分；EasyEDA Pro 
 | **Skill** (`easyeda-agent`) | AI 客户端里的工作流、参考、脚本、规范 | `~/.claude/skills`、`~/.codex/skills` 和/或 Codex Desktop 使用的 `~/.agents/skills` |
 | **EasyEDA Pro（宿主）** | 官方编辑器,需开启「允许外部交互」 | 桌面应用 |
 
-> **一句话记牢**:升级不是只升 CLI —— **CLI、连接器 `.eext`、Skill 三者要一起升到同一版本**,
-> 否则 `daemon health` 会把落后的连接器标成 stale(`connectorVersionOk:false`),动作会打不通。
+> `easyeda update --check` 会列出 CLI、连接器和 Skill 的版本差异。差异是安装诊断；
+> 某动作是否可用以当前 `--help`、action 目录和实际调用结果为准。
 
 ---
 
@@ -53,7 +53,7 @@ daemon 默认固定监听 `60832`，连接器重试同一端口；不要额外�
 ### 3. 导入连接器 `.eext`
 
 从 [GitHub Release](https://github.com/zhoushoujianwork/easyeda-agent/releases/latest) 下载
-`easyeda-agent-connector.eext`(**与 CLI 严格同版**),或从[**立创官方插件市场**](https://jlc-ext.com/item/zhoushoujian/easyeda-agent-connector)一键安装(平台可原地自动更新,但**版本可能滞后 CLI** —— 需严格三要素同版时以 GitHub Release 的 `.eext` 为准),然后:
+`easyeda-agent-connector.eext`，或从[**立创官方插件市场**](https://jlc-ext.com/item/zhoushoujian/easyeda-agent-connector)一键安装(平台可原地自动更新,但版本可能滞后 CLI；缺少新 handler 时使用 GitHub Release 的 `.eext`),然后:
 
 > EasyEDA Pro → **扩展管理 → 导入扩展** → 选中 `.eext` 文件
 
@@ -71,7 +71,7 @@ daemon 默认固定监听 `60832`，连接器重试同一端口；不要额外�
 
 支持 MCP 的客户端还可以选择注册仓库内的 stdio 适配层。MCP 是**可选调用入口**,
 不是替代 CLI/daemon 或 Skill 的第五套状态;它仍经过同一套 typed action、审计和
-workflow gate。
+typed action、审计和事实检查。
 
 ```bash
 git clone https://github.com/zhoushoujianwork/easyeda-agent.git
@@ -94,13 +94,13 @@ easyeda daemon health
 ```
 
 关注返回里的 `connectorVersionOk`:
-- `true` —— 连接器与 daemon 同版,一切就绪;
-- `false` —— 连接器**落后**(常见于升级只升了 CLI 没重导 `.eext`,或旧窗口没重启);
+- `true` —— 连接器与 daemon 的声明版本匹配;
+- `false` —— 连接器版本有差异(常见于升级只升了 CLI 没重导 `.eext`,或旧窗口没重启)；按当前任务是否缺 handler 决定是否升级;
 - 字段缺失/`null` —— dev 构建,无法硬比对(正常)。
 
 ---
 
-## 升级注意事项(务必三要素一起升)
+## 升级注意事项
 
 1. **`easyeda update`** —— 升级 CLI 二进制 + Skill 目录(装过一次之后的常规路径):
    ```bash
@@ -119,7 +119,7 @@ easyeda daemon health
    *(这步只针对**侧载**的 GitHub Release `.eext`;若连接器是从[立创插件市场](https://jlc-ext.com/item/zhoushoujian/easyeda-agent-connector)装的,平台会原地自动更新 —— 但市场版本可能滞后 CLI,严格同版仍以 Release `.eext` 为准。)*
 3. **完全退出并重启 EasyEDA** —— 重导**不会重载已开着的窗口**;旧窗口会继续跑旧代码、
    和新连接器抢 daemon socket。必须**彻底退出 EasyEDA 再打开**。
-4. **`easyeda daemon health` 复核** —— `connectorVersionOk:true` 才算升级到位。
+4. **`easyeda daemon health` 复核** —— 检查连接、窗口、版本差异和当前动作是否可用。
 
 > 大多数改动其实不需要重导 `.eext`(daemon 侧的 typed action / CLI 更新无需碰连接器);
 > 只有连接器 manifest / handler 变了才需要重新导入。是否需要,看 Release 说明。
@@ -142,7 +142,7 @@ easyeda daemon health
   **侧载**(GitHub Release)的连接器 `.eext` **无法**被 daemon 静默替换(sideload 无原地自动更新),
   所以这里只**检测+提示**,重导那步仍需你手动做(见上)。若连接器是从
   [**立创插件市场**](https://jlc-ext.com/item/zhoushoujian/easyeda-agent-connector)装的,
-  平台**可原地自动更新** —— 但市场版本可能滞后 CLI,严格三要素同版仍以 GitHub Release 的 `.eext` 为准。
+  平台**可原地自动更新** —— 但市场版本可能滞后 CLI；需要新 handler 时以 GitHub Release 的 `.eext` 为准。
 
 ---
 
@@ -162,18 +162,16 @@ easyeda daemon health
 ```text
 请使用 easyeda-agent 完成 EasyEDA Pro 任务。
 
-把 easyeda update --check --exit-code 作为当前会话第一条命令。只有 easyeda CLI、
-easyeda-agent Skill、运行中 daemon 可验证且精确等于 GitHub latest，所有已连接 Connector
-与 latest 共享 major.minor 兼容线时继续。否则按门禁诊断升级对应组件；仅 Connector 跨兼容线时安装
-命令所示同一 GitHub Release 的 easyeda-agent-connector.eext，保存文档并完全退出、重开
-EasyEDA。任何组件升级后立即结束当前 Agent 会话并新开会话，从版本检查重新开始。确认
-已开启“允许外部交互”，再运行 easyeda health 核对目标工程、页面和版本。
+先运行 easyeda health 核对目标工程、页面和连接器。安装版本需要对账时运行
+easyeda update --check --exit-code；版本差异只作诊断，不作为动作许可。若当前命令或 connector
+handler 缺失，升级对应组件；更新 Skill 后让客户端重新加载，更新连接器后完全退出并重开
+EasyEDA。确认已开启“允许外部交互”。
 
 先读 Skill 的 schematic-data.md「数据驱动架构基准」。保留官方原始快照，在源数据副本
 明确 canonical 连接、核心/外围归属、参考引脚与约束；用 layout-plan --zones、
 layout-sheet-plan、layout-render 计算并验证，已确认页用 compose --layout-page 固定转换。
 问题由数据检查发现，修源数据/采集/算法后重算，不以现场逐件试摆或手改队列兜底。
-Apply 后回读器件、pin→net/NC、真实直连、位号和框/标题，逐页严格门禁并显式保存。
+Apply 后回读器件、pin→net/NC、真实直连、位号和框/标题，逐页运行检查并显式保存、重开回读。
 位号参与遮挡/入框，型号/参数等非位号属性文字排除布局检查；截图只辅助发现规则遗漏。
 不把同网/同框、高分、缺测或未完成溯源当通过，不把 GPIO 号当物理脚号。
 ```

@@ -104,11 +104,11 @@ func TestLocalRuntimeExactAndReconnect(t *testing.T) {
 	if e := checkVersionGate(cfg, []byte(`{"version":"v1.4.9-dev.1","windows":[{"connectorVersion":"1.4.9-dev.1"}]}`), &out); e != nil {
 		t.Fatal(e)
 	}
-	if e := checkVersionGate(cfg, []byte(`{"version":"v1.4.8","windows":[{"connectorVersion":"1.4.8"}]}`), &out); e == nil {
-		t.Fatal("cached pass or skip flag bypassed local mismatch")
+	if e := checkVersionGate(cfg, []byte(`{"version":"v1.4.8","windows":[{"connectorVersion":"1.4.8"}]}`), &out); e != nil {
+		t.Fatalf("local mismatch is diagnostic-only: %v", e)
 	}
-	if e := checkVersionGate(cfg, []byte(`bad`), &out); e == nil {
-		t.Fatal("invalid health accepted")
+	if e := checkVersionGate(cfg, []byte(`bad`), &out); e != nil {
+		t.Fatalf("invalid version diagnostic must not block actions: %v", e)
 	}
 }
 

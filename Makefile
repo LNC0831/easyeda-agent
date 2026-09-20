@@ -169,6 +169,7 @@ _LDFLAGS = -s -w -X 'github.com/zhoushoujianwork/easyeda-agent/internal/version.
 
 skill-check: ## validate tracked skill contents and installed-package local links (offline)
 	python3 scripts/pack-skill.py --check
+	python3 scripts/check-exam-examples.py
 
 release-script-test: ## offline tests for release guards, packaging and installed skill helpers
 	python3 -m unittest discover -s scripts/tests -p 'test_*.py'

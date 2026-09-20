@@ -15,17 +15,18 @@
 ```bash
 # 首次用刚构建的本机二进制调用；--binary 指向实际 PATH 安装位置，不是 dist 内二进制。
 dist/easyeda_darwin_arm64 update --local-dir dist --binary /usr/local/bin/easyeda
-# 安装后新 Agent 会话的第一条命令；不访问 GitHub
+# 安装后显式核对本地包；不访问 GitHub
 easyeda update --local-dir /absolute/path/to/dist --check --exit-code
 ```
 
 本地安装替换 CLI 和已安装客户端的完整 Skill（备份路径输出），不自动重启进程或导入插件。
 保存文档，用安装后的 CLI 重启 daemon；卸载旧侧载连接器、导入输出的 `.eext`，完全退出并重开
-EasyEDA，然后新开 Agent 会话。开发版必须精确同版，不能套用正式版的 patch 兼容规则。
+EasyEDA。开发版精确同版便于定位源码与运行态差异，不能套用正式版的 patch 兼容规则。
 检查比对包 SHA-256、实际 CLI 字节、Skill 全部文件（含 metadata 和 `.version`）及实时版本。
 checksum 只防意外损坏，不是签名：只使用自己构建或可信来源的本地包。
-无连接、旧 daemon、混合 Skill 或任一旧 Connector 均返回非零；目标页/身份/连通性守卫不变。
-未安装前可以用 dist 二进制进行离线测试，不能据此声称现场 READY。
+无连接、旧 daemon、混合 Skill 或任一旧 Connector 均会在对账中显示差异；它们不阻止离线工作，
+但涉及对应运行态能力时必须如实报告版本证据。未安装前可以用 dist 二进制进行离线测试，
+不能据此声称现场已验证。
 
 ### 正式版
 
@@ -41,11 +42,11 @@ easyeda update --check
 easyeda update
 ```
 
-`update --check` 只读；`--check --exit-code` 是 Agent 会话硬门，只有 CLI、已安装的
-客户端 Skill、运行中的 daemon 可验证且精确等于 GitHub latest，并且所有已连接 Connector
-与 latest 共享 major.minor 兼容线时返回 0。Connector 仅差 patch 可直接通过；其余组件的
-任何落后、超前、开发构建、未知或未连接状态，以及 Connector 跨 minor/major，都返回 10；查询 latest
-本身失败返回 1。latest 查询会使用 `GH_TOKEN` / `GITHUB_TOKEN`，API 匿名额度耗尽时回退
+`update --check` 是显式、只读的安装对账工具，不是每次 EDA 操作的前置许可。
+`--check --exit-code` 保留现有自动化退出码：满足所选对账条件返回 0，组件差异返回 10，查询
+本身失败返回 1。正式版对账可比较 GitHub latest 与 Connector major.minor 兼容线；本地开发版
+使用 `--local-dir` 比较指定构建。发现差异时根据当前任务是否依赖该运行态能力决定升级或只记录，
+不强制追 latest，也不要求另开 Agent 会话。latest 查询会使用 `GH_TOKEN` / `GITHUB_TOKEN`，API 匿名额度耗尽时回退
 到公开 Release 重定向。普通 `update` 更新 CLI 与已安装的 Skill，不能安装或替换编辑器里的连接器。需要安装缺失的客户端
 Skill 时用 `--create-missing`，保留本地 Skill 修改用 `--preserve`，固定发布版用
 `--version <version>`。更新二进制后还需让 daemon 使用新二进制启动。
@@ -55,16 +56,16 @@ GitHub Release 大资产连续三次失败时，CLI/安装器默认尝试 `https
 SHA-256 校验。`EASYEDA_GITHUB_PROXY=https://mirror.example/{url}` 可替换传输镜像，设为
 `off` 可禁用。不要把镜像提供的 checksum 当信任依据。
 
-版本门禁的恢复顺序固定：
+需要升级时按以下顺序恢复安装态：
 
-1. 运行不带 `--version` 的 `easyeda update`，把 CLI 和已安装 Skill 升到 latest。会话门禁
-   不使用 `--preserve`，因为保留混合内容不能证明 Skill 与 Release 一致。
+1. 运行 `easyeda update` 更新到所选版本；需要精确 Release 时显式传 `--version`。
+   `--preserve` 会形成混合内容，不能作为纯 Release 一致性的证据。
 2. 停止旧 daemon，用升级后的 `easyeda daemon start` 重启。
 3. 纯 patch 更新时保留现有 Connector，不升级插件市场版本，也不重开 EasyEDA。仅当
    Connector 与 latest 跨 minor/major 不兼容时，从 `update` 输出的 GitHub Release 地址取得
    对应 `.eext`；在扩展管理器卸载旧侧载项、导入新包，然后完全退出并重开 EasyEDA。
-4. **结束当前 Agent 会话并新开会话。** 新会话重新运行 `easyeda update --check --exit-code`；
-   只有输出 `READY` 且退出 0 才可继续。当前会话已经载入旧 Skill，禁止升级后原地继续。
+4. 重新运行 `easyeda update --check` 记录实际版本。若当前运行时不能热加载新 Skill，后续步骤按
+   已加载说明和当前 `--help` 执行，并明确文档/二进制差异；无需把重开会话当作执行许可。
 
 在另一台机器或新的终端验证时，固定 Release 版本并使用独立目录，先检查
 `easyeda --version`、`easyeda sch compose --help`、`easyeda blocks ls --json`。
@@ -110,8 +111,7 @@ Node 版本遵循 bundle 的要求（至少 20.17）。
 文档、核实唯一目标数据库/连接器 UUID/旧版本和现有外部交互权限；只原子更新该连接器
 的索引与 bundle，校验新包版本/哈希，保留原权限，不清空数据库或站点。通过正常
 `debug exec` 运行已审阅的专用更新脚本，不能借此绕过设计写操作守卫。重载用户选定的
-Web 编辑器并核对新窗口/运行版本；CLI、daemon、全部 Skill 与连接器同开发版后，仍须
-由全新 Agent 会话从首条版本门禁开始。用户指定 Web 时绝不改开桌面客户端。
+Web 编辑器并核对新窗口/运行版本。用户指定 Web 时绝不改开桌面客户端。
 
 ## 确认连接和目标文档
 
@@ -137,9 +137,9 @@ easyeda doc switch "<doc-name-or-uuid>" --project "<project>"
 
 - 没有 daemon：检查当前安装路径与启动日志；开发环境恢复现有 `make dev`。
 - daemon 正常但 `windows` 为空：检查编辑器、登录态、扩展启用和外部交互权限。
-- 已连接：核对目标工程/文档、连接器版本及 `versionGate`。`health` 只验证当前 CLI 与
-  连接器的兼容关系，不能代替 GitHub latest 会话门禁。按 findings 的修复建议处理版本错位；
-  `--skip-version-check` 不是常规升级或恢复方法。
+- 已连接：核对目标工程/文档、连接器版本及 `versionGate`。`health` 提供当前 CLI 与
+  连接器的兼容证据；GitHub latest 只用于显式安装对账，不决定本次操作能否继续。按 findings
+  评估当前步骤是否依赖缺失能力，并记录实际运行版本。
 - 写操作使用 `--project` 和 `--doc`，由 CLI 在派发前实时确认目标文档。没有独立的
   `easyeda context` 命令；`health` 显示连接状态，`doc ls/switch` 读取/切换实时文档。
 
@@ -159,6 +159,12 @@ easyeda doc reload "<doc-name-or-uuid>" --project "<project>"
 它先保存，再关闭并重开文档。PCB 若刷新了铜形或规则，之后运行 `pcb pour-rebuild`
 再验证；`doc switch` 只切前台，不等于 reload。文档重载也不等于停止旧连接器运行时。
 
+Web 编辑器若在重开后持续显示加载动画，停止自动重试和现场写入：第一次 `openDocument` 可能
+仍在宿主内部执行，重复重开会叠加空白标签。保留错误、当前标签状态和 typed read 结果；只有
+UUID 变成目标值、但对象仍不可读时，仍视为加载未完成。当前 `doc reload` 保存目标分屏、等待
+旧文档退出活动态，并只做一次有界重开；失败时报告数据不可用，修复 typed reload/open 后复测。
+禁止通过刷新浏览器、工程树、属性面板或 CUA 恢复。
+
 ## 单连接恢复
 
 同一目标页出现多个版本或 windowId、反复注册或写请求超时时，先暂停 Apply，并保留
@@ -166,8 +172,8 @@ health、journal 和日志。多个真实工程/窗口可以同时存在；要�
 
 1. 先用回读确认最后一条写是否落地；能保存时保存。响应失败不一定代表内容未改变，
    不要直接重放整队列。
-2. 检查扩展管理器只保留所选渠道的当前连接器，卸载重复旧项后完全退出并重启 EasyEDA。
-   网页版若同一 tab 重载仍无法重连，保存后关闭该 tab，再打开目标工程。
+2. 用版本、连接和运行日志定位重复连接器或旧运行时；Agent 不通过扩展管理器、浏览器标签或
+   其他 GUI 修复。需要宿主侧重新安装或重启时停止现场操作并报告该外部前置条件。
 3. 只有 daemon 本身版本或状态异常时才重启它；`make dev` 管理的进程通过其终端恢复。
 4. 用 `health` 确认目标只剩预期连接和版本，再读取目标页，例如
    `sch list --page <uuid> --include-pins`。读回稳定且未完成步骤已核清后，再继续 Apply。

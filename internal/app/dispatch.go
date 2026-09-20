@@ -44,33 +44,16 @@ type appConfig struct {
 	host    string
 	ports   string // "60832-60841"
 	project string // optional stable routing hint (project name/uuid) → windowId
-	// forceReason, when set by a route command's --force <reason>, is attached to
-	// every action request so the daemon-side workflow stage gate honors the same
-	// audited override (per-run; see internal/daemon/stagegate.go).
+	// forceReason/forceUnsafe are retained for wire compatibility with older
+	// clients. Routing and stale reads no longer consult them as permission
+	// tokens, so current commands do not set them.
 	forceReason string
-	// forceUnsafe escalates forceReason past a fully-unconfirmed mechanical
-	// skeleton (issue #132) — set only by --force-unsafe.
 	forceUnsafe bool
-	// skipVersionCheck disarms the CLI↔daemon↔connector version consistency gate
-	// (--skip-version-check, or EASYEDA_SKIP_VERSION_CHECK=1). Every bypass of a
-	// BLOCKING verdict writes a `cli.version_check.skip` audit row — see
-	// version_gate.go.
+	// skipVersionCheck is a deprecated compatibility flag. Runtime version
+	// differences are diagnostic only and never authorize or refuse actions.
 	skipVersionCheck bool
-	// staleReadReason is the ONE-CALL write-then-read opt-in past the daemon's
-	// STALE_READ gate. It is NOT bound to any flag and must never be set on the
-	// shared config: the only legal way to set it is staleReadOptIn(), which
-	// hands back a scoped COPY consumed by exactly one dispatch. See
-	// stale_read_optin.go for why this is a per-call value rather than a second
-	// process-wide force switch.
-	staleReadReason string
-	// forceStaleRead is the HUMAN escape hatch past the same gate
-	// (--force-stale-read "<理由>"). Unlike staleReadReason it IS bound to a
-	// persistent flag, so its lifetime is the whole process — that is the price
-	// of a hatch a human can reach. What keeps it from becoming a second
-	// forceReason is that it is not a second wire field at all: it feeds the SAME
-	// narrowing predicate (staleReadForceReason → staleReadEligibleRequest), so it
-	// can only ever attach to a PCB read with RequiresGate=="" and can never
-	// unlock the routing stage gate. See stale_read_optin.go.
+	// forceStaleRead is a deprecated, no-op compatibility option. Stale reads
+	// now return with staleRisk evidence and never require an unlock token.
 	forceStaleRead string
 	// doc, when set (--doc <uuid|name>), PINS every action — mutating AND read —
 	// to that document: the daemon-choke-point guard (ensureActiveDoc) switches
@@ -227,7 +210,7 @@ type actionResult struct {
 	Seq      schSeqCounters
 	errorMsg string
 	// errorCode is the daemon/connector error.code that came with ok=false
-	// ("STALE_READ", "STAGE_BLOCKED", …). Callers that must branch on WHY a
+	// ("STALE_READ", …). Callers that must branch on WHY a
 	// call failed read this instead of matching on the message text.
 	errorCode string
 }
@@ -861,14 +844,6 @@ func postAction(cfg *appConfig, action, window string, payload any, timeout time
 		return nil, fmt.Errorf("no easyeda-agent daemon found on %s:%s (start it with `easyeda daemon start`)", cfg.host, scan.Ports)
 	}
 
-	// 版本一致性门(issue #181):CLI / daemon / connector 错位会让**后续每一条
-	// 排查都染上噪音**(改好的 bug 在旧 daemon 上照样复现)。判据用的就是上面这
-	// 次 /health 扫描的报文 —— 零额外往返;每进程只判一次;`easyeda health` /
-	// `version` / `update` 不走这条路,所以诊断与修复路径不会被自己拦死。
-	if err := checkVersionGate(cfg, scan.Found.Raw, os.Stderr); err != nil {
-		return nil, err
-	}
-
 	body := map[string]any{"action": action}
 	// Identify this client process for audit attribution and the daemon's
 	// concurrent-writer advisory (issue #108).
@@ -889,16 +864,6 @@ func postAction(cfg *appConfig, action, window string, payload any, timeout time
 		if cfg.forceUnsafe {
 			body["forceUnsafe"] = true
 		}
-	} else if reason := staleReadForceReason(cfg, action, payload); reason != "" {
-		// 写后回读放行位(stale_read_optin.go)。只在这一个咽喉上落到线上,并且
-		// 只对「PCB 域 + 不改画布 + 不受布线门管辖」的动作生效 —— 所以它不可能
-		// 顺带解锁 CheckRouteGate。daemon 收到后自己写 daemon.stale_read.force
-		// 审计行,app 侧不另造格式。
-		//
-		// 显式排在 forceReason 之后:人手敲的 `--force <理由>`(布线阶段门)语义更强,
-		// 不该被一个自动放行位覆盖掉(也不该把 forceUnsafe 带上 —— 那是布线门的东西)。
-		// 人手敲的 STALE_READ 逃生口是 --force-stale-read,它走的正是下面这个函数。
-		body["forceReason"] = reason
 	}
 	// Tell the daemon where to drop artifacts. Anchored to the project root
 	// (nearest .git/go.mod ancestor), falling back to cwd — and NEVER a path
@@ -987,11 +952,8 @@ type healthResult struct {
 	Host   string        `json:"host"`
 	Ports  string        `json:"ports"`
 	Found  *daemonHealth `json:"found,omitempty"`
-	// VersionGate is the CLI↔daemon↔connector consistency verdict, filled in by
-	// the `health` command (not by scanHealth — the dispatch path computes its
-	// own copy). It is the same judgement that refuses a mismatched dispatch,
-	// so `health` answers "will my next command be blocked, and how do I fix
-	// it" without the user having to trip the gate first.
+	// VersionGate is the CLI↔daemon↔connector consistency diagnostic filled
+	// in by `health`. It never authorizes or refuses action dispatch.
 	VersionGate *versionGateReport `json:"versionGate,omitempty"`
 	Checked     []checkedHealth    `json:"checked"`
 }

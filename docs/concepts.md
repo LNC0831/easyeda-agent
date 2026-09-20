@@ -15,6 +15,17 @@
 原始观测保留，源目标表达连接/归属/约束，算法生成，数据检查，失败回源重算，Apply 后回读对账。
 新设计使用区内与纸张两层计算，不以旧九宫格、三层 tidy/move 或截图手工修补代替。
 
+### 样例、参数与事实检查
+
+样例是运行时可读的已执行做法：说明来源、开始状态、参数单位、命令、实际回读、错误修法和
+验证状态。Agent 先选择相近样例，再替换参数并根据现场结果修正；样例不会冻结坐标，也不会
+把一个题目的例外推广成通用规则。没有完成态答案或尚未连编辑器的内容标 `source-only`；
+离线计算通过标 `offline-verified`；只有保存、重载并从真实文档回读后才标 `live-verified`。
+
+检查结果分开解释：连接、DRC、几何、规则、评分分别陈述自己观测到的事实。workflow stage、
+版本差异、评分和 staleRisk 可帮助定位问题，但不授权或拒绝普通 action。需要权威状态时，
+工具批次执行 save → reload → readback；刷新失败就是数据不可用，不能靠阶段签字补足。
+
 ## 本地设计比较与 Lib 内部计算
 
 ### 通用局部布局内核与 Lib 适配层
@@ -341,7 +352,7 @@ ESP32 双三极管自动下载、SY8089 buck、RS-485、GNSS 前端、microSD…
 - **流程层** design-flow(S0–S6/P0–P10):把块编排进整板流程。
 块 `parts.<role>` 指回器件层、`block` 引用被流程层的 S0 方案书 module 引用——三层串起来。
 
-### `verification` 门(块的分项可信判据)
+### `verification` 证据(块的分项可信判据)
 
 `schema_version: 2` 起将验证拆成 `schematic`、`component_selection`、`pcb_drc`、`bringup`
 四个独立阶段,每阶段记录 `status` + evidence/issues。只有四项均为 `passed` 且显式
@@ -404,14 +415,14 @@ net ID、全量 verification、provenance 和复杂 PCB constraints；否则保�
 | 判什么 | ✅ 唯一可信 | ❌ 不可信 |
 |---|---|---|
 | 网络连通 | `pcb drc` 的 **Connection Error 数**(0=通) | `pcb track-list` 计数(#103:已布线板读 0)|
-| 原理图覆盖/布局 | 目标所有权/直连对账 + 实测本体/位号/线/标记/框检查 + 逐页严格门禁；覆盖不足列未验证 | 单独 layout-lint、同网/同框、高分、截图 |
+| 原理图覆盖/布局 | 目标所有权/直连对账 + 实测本体/位号/线/标记/框逐页检查；覆盖不足列未验证 | 单独 layout-lint、同网/同框、高分、截图 |
 | PCB 器件覆盖/间距 | `pcb layout-lint` | 截图(stale/blank)|
-| 手焊可达 | `layout-lint --gate` #99(每件 ≥1 侧 ≥60mil)| — |
+| 手焊可达 | `layout-lint` 的逐件侧向净空数据（手焊样例通常检查 ≥1 侧 ≥60mil）| 仅看电气 clearance |
 | **布局好不好** | `pcb layout-score` 的**逐维分 + 归因**(#167)| 单一总分(掩盖是哪维差)、`skipped` 维当满分 |
 | **度量本身对不对** | 好板 fixture 回归:好板必须高分 | 在差板上调参调到"看着顺眼" |
-| 阶段门 | `workflow` 机械强制(指纹绑定,mutation 自动失效)| 人肉记状态 |
+| 批次完成状态 | 参数输入 + 当前对象回读 + 检查结果 + save/reload/readback | 旧 workflow stage、对话中的“已完成” |
 | 布线间距 | `pcb drc` 的 **Clearance Error 数** | — |
-| 读 mutation 后的状态 | 先 `doc reload` 再读(见 [[pcb-stale-reads-need-doc-reload]])| mutation 后第一次读 |
+| 读 mutation 后的状态 | 即时读用于诊断并关注 `staleRisk`；最终证据为 save → `doc reload` → readback | 把 mutation 后第一次读当最终状态 |
 
 ---
 

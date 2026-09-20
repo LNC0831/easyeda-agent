@@ -125,19 +125,16 @@ type refineReport struct {
 
 // immovableSet 是精修**绝不能碰**的器件位号集合。
 //
-// #153 原文：「锁定件、edge-bound 件、`stage confirm-tier` 已确认的功能位一律不动」。
-// 这三类的共同点是：它们的位置是**人或工艺决定的**，不是几何优化的产物 ——
-// 挪动它们等于用一个启发式覆盖掉一个决定。
-//
-// 数据其实一直是齐的（workflow.State.PlacementTiers 里有逐档确认的位号 + 指纹），
-// 但**没有任何执行器读过它**：place-constrained 完全不看 locked，
-// align/distribute/grid-snap/move 里也只有 arrange 过滤了锁定件。这个函数是第一个。
+// The editor lock is live board data and an explicit geometric constraint.
+// Historical `stage confirm-tier` records are deliberately excluded: the
+// compatibility workflow may describe an old decision, but it cannot authorize
+// or block a current operation.
 type immovableReason struct {
 	Designator string
 	Reason     string
 }
 
-func buildImmovableSet(snap *boardSnapshot, tiers map[int][]string, includeLocked bool) (map[string]string, []immovableReason) {
+func buildImmovableSet(snap *boardSnapshot, includeLocked bool) (map[string]string, []immovableReason) {
 	out := map[string]string{}
 	var list []immovableReason
 	add := func(des, why string) {
@@ -159,30 +156,8 @@ func buildImmovableSet(snap *boardSnapshot, tiers map[int][]string, includeLocke
 			}
 		}
 	}
-	// 已签字的分档：档 1(孔/结构件) 与档 2(边缘接口件，朝向经用户确认) 是硬的；
-	// 档 3/4 也签过字，但它们是几何摆放的结果，精修动它们是本分。
-	// 这里的取舍：**只保护 1/2 档**，让 3/4 档可被吸附微调（位移仍受 MaxShift 限制）。
-	for tier, parts := range tiers {
-		if tier > 2 {
-			continue
-		}
-		for _, p := range parts {
-			add(p, fmt.Sprintf("tier-%d confirmed (%s)", tier, tierPurpose(tier)))
-		}
-	}
 	sort.SliceStable(list, func(i, j int) bool { return list[i].Designator < list[j].Designator })
 	return out, list
-}
-
-func tierPurpose(tier int) string {
-	switch tier {
-	case 1:
-		return "mounting holes / mechanical"
-	case 2:
-		return "edge connectors — orientation was user-confirmed"
-	default:
-		return "confirmed"
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -212,8 +187,8 @@ func budgetMoves(moves []refineMove, immovable map[string]string, maxShift float
 			rejects = append(rejects, fmt.Sprintf("%s: %.2f mil exceeds the %.1f mil shift budget — snapping only, not rearranging", m.Designator, s, maxShift))
 			continue
 		}
-		// 亚 0.01 mil 的移动是浮点噪声，发出去只会白白触发 InvalidatesStage
-		// 和 autosave（auto-place 不幂等的老毛病就是这么来的）。
+		// 亚 0.01 mil 的移动是浮点噪声，发出去只会白白触发 autosave
+		// （auto-place 不幂等的老毛病就是这么来的）。
 		if m.shift() < 0.01 && !m.SetRot {
 			continue
 		}
@@ -280,13 +255,8 @@ func rollbackRefineMoves(cfg *appConfig, window string, attempted []refineMove, 
 		}
 	}
 
-	// 回读证实。这是**写后回读**的教科书形态:上面刚逐件发过 pcb.component.modify
-	// (回滚也是写),读的就是那同一批 primitive,判据是「读回来的坐标 == 写下去的
-	// 原位坐标」。铁律 5 的 STALE_READ 门此刻是关着的,所以必须带放行位
-	// (stale_read_optin.go)——**不带就是本函数最坏的失败形态**:回滚其实做完了,
-	// 回读被门拦下 → restored=0 + 一条 "verification read failed",报出来的是
-	// 「回滚没成功」,而真相是「没能验证」。判据把好状态报成坏状态,人会照着去手工
-	// 补一遍回滚,把件挪到第三个位置。
+	// 回读证实：判据是「读回来的坐标 == 刚写回的原位坐标」。若读取失败，
+	// 报告验证不可用，不把写入回执冒充成回滚已证实。
 	res, err := requestReadAfterWrite(cfg, "pcb.components.list", window, map[string]any{},
 		"pcb refine 精修环 · 回滚后回读证实器件已回原位")
 	if err != nil {

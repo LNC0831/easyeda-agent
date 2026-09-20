@@ -10,20 +10,15 @@ import (
 	"github.com/zhoushoujianwork/easyeda-agent/internal/workflow"
 )
 
-// pcb_stage_state.go — CLI adapter over the shared internal/workflow stage
-// machine (issue #97).
+// pcb_stage_state.go — CLI adapter over historical internal/workflow records.
 //
-// The state machine itself (stages, persistence, route gate, fingerprints)
-// lives in internal/workflow so the DAEMON enforces the same gates at the
-// /action dispatch choke point (see internal/daemon/stagegate.go). State is
-// GLOBAL per project (~/.easyeda-agent/workflow/<key>.json) — running the CLI
-// from a different cwd can no longer blind the gate; the old cwd-relative
-// .easyeda/pcb-stage/ file is still read as a legacy fallback.
+// Stages, persistence, readiness calculations, and fingerprints live in
+// internal/workflow. State is global per project and remains readable by the
+// legacy `workflow` / `pcb stage` commands; it no longer authorizes or blocks
+// typed actions. The old cwd-relative .easyeda/pcb-stage file remains a fallback.
 //
-// On top of the marker checks, the CLI-side route gate verifies the DOCUMENT
-// FINGERPRINTS stored at confirm time (placement poses / outline geometry): a
-// GUI drag, a debug.exec_js edit or another agent's move changes the hash, the
-// gate auto-invalidates the stale confirmation and blocks until re-confirmed.
+// Explicit stage commands can still compare fingerprints stored at confirm time
+// with live placement/outline geometry for historical reporting.
 
 // Aliases keep the app-side names stable over the shared workflow types.
 type (
@@ -73,10 +68,8 @@ func checkRouteGate(s *pcbStageState, force, forceUnsafe bool, reason string) ro
 	return workflow.CheckRouteGate(s, force, forceUnsafe, reason)
 }
 
-// resolveStageProject yields the project key the workflow state is filed under:
-// the explicit --project when given, else the live window's project identity
-// (friendlyName || name — the same value the connector reports as projectName,
-// so the CLI and the daemon-side gate agree on the key).
+// resolveStageProject yields the project key the workflow record is filed under:
+// the explicit --project when given, else the live window's project identity.
 func resolveStageProject(cfg *appConfig, window string) (string, error) {
 	if strings.TrimSpace(cfg.project) != "" {
 		return cfg.project, nil
@@ -229,10 +222,9 @@ func pullOutlineFingerprint(cfg *appConfig, window string) (*stageFingerprint, e
 
 // verifyStageFingerprints re-derives the placement/outline fingerprints from the
 // live document and compares them to the ones stored at confirm time. A
-// mismatch means the document changed OUTSIDE the gated flow (GUI drag,
-// debug.exec_js, another agent) — the stale confirmation is invalidated so the
-// flow re-enters at the right stage. Returns human-readable drift notes (empty
-// = no drift). The caller persists the state.
+// mismatch means the document changed after the historical confirmation (GUI
+// drag, debug.exec_js, another agent). Returns human-readable drift notes for
+// explicit stage/report commands; ordinary actions do not call this function.
 func verifyStageFingerprints(cfg *appConfig, window string, st *pcbStageState) ([]string, error) {
 	var drift []string
 	if st.LayoutFP != nil && st.Has(stagePlacementConfirmed) {
@@ -262,109 +254,11 @@ func verifyStageFingerprints(cfg *appConfig, window string, st *pcbStageState) (
 	return drift, nil
 }
 
-// gateRouteCommand enforces the route gate for a composite CLI route command.
-// It returns errActionFailed (already-explained) when routing is blocked, nil
-// when allowed. FAIL-CLOSED: an unreadable state or an unverifiable fingerprint
-// blocks routing (the pre-#97 behavior treated a read error as "un-gated").
-//
-// The override is TIERED (issue #132, plan 1): --force <reason> bypasses SOFT
-// gaps only — the mechanical skeleton (placement_confirmed / outline_confirmed)
-// must be at least partly confirmed, and an UNKNOWN state (unresolvable
-// project, unreadable state file) does not qualify (unknown = possibly
-// zero-confirmed). --force-unsafe <reason> bypasses everything — the #116
-// footgun now requires deliberately reaching for the sharper flag. Either
-// override is per-run, audited in the state history, and propagated to the
-// daemon (cfg.forceReason/forceUnsafe → every routing action request) so the
-// daemon-side gate applies the same tier; nothing is confirmed, and the next
-// un-forced run is gated again.
-func gateRouteCommand(cfg *appConfig, window, cmdName, forceReason, forceUnsafeReason string, stderr io.Writer) error {
-	unsafeReason := strings.TrimSpace(forceUnsafeReason)
-	forceUnsafe := unsafeReason != ""
-	reason := strings.TrimSpace(forceReason)
-	if forceUnsafe && reason == "" {
-		reason = unsafeReason
-	}
-	force := reason != ""
-	if force {
-		// Propagate to the daemon-side gate for the routing actions this command
-		// is about to dispatch (pcb.line.create / pcb.via.create / …).
-		cfg.forceReason = reason
-		cfg.forceUnsafe = forceUnsafe
-	}
-
-	project, err := resolveStageProject(cfg, window)
-	if err != nil {
-		if forceUnsafe {
-			fmt.Fprintf(stderr, "⚠️  %s: %v — proceeding on --force-unsafe (reason: %s)\n", cmdName, err, reason)
-			return nil
-		}
-		if force {
-			fmt.Fprintf(stderr, "❌ %s: %v — --force cannot vouch for an UNKNOWN stage state (it may be zero-confirmed, issue #132); pass --project, or escalate with --force-unsafe <reason>\n", cmdName, err)
-			return errActionFailed
-		}
-		fmt.Fprintf(stderr, "❌ %s: %v (routing is stage-gated; pass --project or --force <reason>)\n", cmdName, err)
-		return errActionFailed
-	}
-	st, err := loadPcbStageState(project)
-	if err != nil {
-		if forceUnsafe {
-			fmt.Fprintf(stderr, "⚠️  %s: could not read workflow state: %v — proceeding on --force-unsafe (reason: %s)\n", cmdName, err, reason)
-			return nil
-		}
-		if force {
-			fmt.Fprintf(stderr, "❌ %s: workflow state unreadable (%v) — --force cannot vouch for an unknown state (issue #132); fix or delete %s, or escalate with --force-unsafe <reason>\n",
-				cmdName, err, workflow.Path(project))
-			return errActionFailed
-		}
-		fmt.Fprintf(stderr, "❌ %s: workflow state unreadable (%v) — refusing to route (fail-closed); fix or delete %s, or --force <reason>\n",
-			cmdName, err, workflow.Path(project))
-		return errActionFailed
-	}
-
-	// Fingerprint drift check: catches edits the gated flow never saw.
-	if !force {
-		drift, derr := verifyStageFingerprints(cfg, window, st)
-		if derr != nil {
-			fmt.Fprintf(stderr, "❌ %s: cannot verify document fingerprints (%v) — refusing to route (fail-closed)\n", cmdName, derr)
-			return errActionFailed
-		}
-		if len(drift) > 0 {
-			if serr := savePcbStageState(st); serr != nil {
-				fmt.Fprintf(stderr, "⚠️  %s: could not persist drift invalidation: %v\n", cmdName, serr)
-			}
-			for _, d := range drift {
-				fmt.Fprintf(stderr, "⚠️  %s: %s\n", cmdName, d)
-			}
-		}
-	}
-
-	gate := checkRouteGate(st, force, forceUnsafe, reason)
-	if gate.Audited {
-		// Persist every audit event — a granted bypass AND a refused --force
-		// attempt (#132) both belong in the history trail.
-		if serr := savePcbStageState(st); serr != nil {
-			fmt.Fprintf(stderr, "⚠️  %s: gate audit could not be persisted: %v\n", cmdName, serr)
-		}
-	}
-	if !gate.Allowed {
-		fmt.Fprintf(stderr, "❌ %s: %s\n", cmdName, gate.Message)
-		return errActionFailed
-	}
-	if gate.Forced {
-		// Authorization is per-run: routing_authorized is NOT set.
-		fmt.Fprintf(stderr, "⚠️  %s: %s\n", cmdName, gate.Message)
-		return nil
-	}
-	// Normal pass: record routing_authorized (informational — invalidated by any
-	// later placement/outline mutation like every other downstream stage).
-	if !st.Has(stageRoutingAuthorized) {
-		st.Confirm(stageRoutingAuthorized, "gate-pass", cmdName)
-		if serr := savePcbStageState(st); serr != nil {
-			fmt.Fprintf(stderr, "⚠️  %s: could not persist routing_authorized: %v\n", cmdName, serr)
-		}
-	}
-	return nil
-}
+// gateRouteCommand remains as a source-compatible helper for older composite
+// commands. Workflow state is now historical diagnostic data: an absent,
+// corrupt, or unconfirmed record never authorizes or refuses routing, and the
+// legacy force flags do not mutate config or state.
+func gateRouteCommand(_ *appConfig, _, _, _, _ string, _ io.Writer) error { return nil }
 
 // ── placement tiers (issue #125) ────────────────────────────────────────────
 
@@ -507,28 +401,5 @@ func unclaimedParts(live []string, claimed map[string]int) []string {
 		}
 	}
 	sort.Strings(out)
-	return out
-}
-
-// invalidatePcbStageFrom loads the project state, clears the given stage and
-// everything downstream, and persists. Returns the cleared stages (as strings)
-// so a command can surface what its mutation invalidated. Best-effort: a load /
-// save failure is non-fatal to the caller (the mutation itself succeeded).
-// The daemon performs the same catalog-driven invalidation at dispatch, so this
-// CLI-side hook mostly reports what already happened for composite commands.
-func invalidatePcbStageFrom(cfg *appConfig, from pcbStage, cause string) []string {
-	st, err := loadPcbStageState(cfg.project)
-	if err != nil {
-		return nil
-	}
-	cleared := st.InvalidateFrom(from, cause)
-	if len(cleared) == 0 {
-		return nil
-	}
-	_ = savePcbStageState(st)
-	out := make([]string, len(cleared))
-	for i, c := range cleared {
-		out[i] = string(c)
-	}
 	return out
 }

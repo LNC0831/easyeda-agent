@@ -15,8 +15,8 @@ import (
 )
 
 // exitCodeUpdatesAvailable is the exit code `update --check --exit-code` uses when
-// the release-compatibility session gate is not ready, so CI/agents can gate on
-// it without parsing text (0 = verified and compatible, 1 = check failure).
+// explicit install reconciliation is not ready, so CI/agents can check it
+// without parsing text (0 = verified and compatible, 1 = check failure).
 const exitCodeUpdatesAvailable = 10
 
 // updateReport is the JSON shape of `easyeda update` / `easyeda update --check`.
@@ -35,7 +35,7 @@ type updateReport struct {
 	Behind          int                    `json:"behind"`          // components behind the target
 	Mismatched      int                    `json:"mismatched"`      // components at a different or unknown version
 	Unverified      int                    `json:"unverified"`      // live components that could not be checked
-	RestartRequired bool                   `json:"restartRequired"` // this process/session loaded a replaced component
+	RestartRequired bool                   `json:"restartRequired"` // deprecated compatibility field; always false
 	Ready           bool                   `json:"ready"`           // exact CLI/Skill/daemon + compatible connector
 	Notes           []string               `json:"notes,omitempty"`
 }
@@ -102,12 +102,12 @@ If the binary lives in a root-owned dir, re-run with sudo.`,
 		Args: cobra.NoArgs,
 		Example: `  easyeda update                    # CLI + skills → latest
   easyeda update --check            # report only, change nothing
-  easyeda update --check --exit-code  # exit 10 unless the release-compatibility gate is ready
+  easyeda update --check --exit-code  # exit 10 when explicit install reconciliation finds a difference
   easyeda update --version 0.25.0   # pin a release
   easyeda update --skill-only       # leave the binary alone
   easyeda update --json
   easyeda update --local-dir ./dist --binary /absolute/path/to/easyeda  # install trusted local dev assets
-  easyeda update --local-dir ./dist --check --exit-code                 # offline, exact local runtime gate`,
+  easyeda update --local-dir ./dist --check --exit-code                 # offline, exact local runtime reconciliation`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if localDir != "" {
 				for _, flag := range []string{"version", "cli-only", "skill-only", "client", "preserve", "force", "create-missing"} {
@@ -229,8 +229,8 @@ If the binary lives in a root-owned dir, re-run with sudo.`,
 
 			rep.Behind = countBehind(rep)
 			rep.Mismatched, rep.Unverified = countVersionGateProblems(rep)
-			rep.RestartRequired = updateRequiresRestart(rep)
-			rep.Ready = rep.Behind == 0 && rep.Mismatched == 0 && rep.Unverified == 0 && !rep.RestartRequired
+			rep.RestartRequired = false
+			rep.Ready = rep.Behind == 0 && rep.Mismatched == 0 && rep.Unverified == 0
 			rep.Notes = updateNotes(rep)
 			if !cliOnly && rep.CLI != nil && rep.CLI.Status == "error" {
 				rep.Notes = append(rep.Notes, "Skill update skipped because the CLI update failed.")
@@ -403,8 +403,7 @@ func probeConnector(cfg *appConfig, target string) *connectorReport {
 	return rep
 }
 
-// countBehind preserves the directional part of the report. The stronger
-// --exit-code gate also considers mismatch and unverifiable live state below.
+// countBehind preserves the directional part of the explicit update report.
 func countBehind(rep updateReport) int {
 	n := 0
 	if rep.CLI != nil {
@@ -426,10 +425,10 @@ func countBehind(rep updateReport) int {
 	return n
 }
 
-// countVersionGateProblems enforces the agent-session invariant: CLI, Skill and
-// daemon must equal the selected GitHub release. Connectors need only share its
-// major.minor line because patch releases contain no connector runtime changes.
-// "Ahead", dev builds and unknown live state are not safe substitutes.
+// countVersionGateProblems supports explicit `update --check --exit-code`
+// reconciliation: CLI, Skill and daemon are compared with the selected release;
+// connectors need only share its major.minor line. This report never controls
+// ordinary action dispatch or the lifetime of an agent session.
 func countVersionGateProblems(rep updateReport) (mismatched, unverified int) {
 	if rep.CLI != nil && (rep.CLI.Status == "ahead" || rep.CLI.Status == "skipped") {
 		mismatched++
@@ -456,18 +455,6 @@ func countVersionGateProblems(rep updateReport) (mismatched, unverified int) {
 	return mismatched, unverified
 }
 
-func updateRequiresRestart(rep updateReport) bool {
-	if rep.CLI != nil && rep.CLI.Status == "updated" {
-		return true
-	}
-	for _, s := range rep.Skills {
-		if s.Status == "updated" || s.Status == "created" {
-			return true
-		}
-	}
-	return false
-}
-
 // updateNotes turns the report into the handful of actionable lines a user needs
 // after an update: restart the daemon, re-import the connector, install skills.
 func updateNotes(rep updateReport) []string {
@@ -483,11 +470,7 @@ func updateNotes(rep updateReport) []string {
 				"then fully quit and relaunch EasyEDA so open windows load it",
 			strings.Join(rep.Connector.Versions, ","), rep.Target, selfupdate.RepoSlug, rep.Target))
 	}
-	skillChanged := false
 	for _, s := range rep.Skills {
-		if s.Status == "updated" || s.Status == "created" {
-			skillChanged = true
-		}
 		if s.Status == "preserved" {
 			notes = append(notes, fmt.Sprintf("skill %s kept local content and its previous version marker; release parity is not claimed", s.Client))
 		}
@@ -497,9 +480,6 @@ func updateNotes(rep updateReport) []string {
 		if s.Status == "skipped" && s.Err != "" {
 			notes = append(notes, fmt.Sprintf("skill %s skipped (%s) — `easyeda update --create-missing` to install it", s.Client, s.Err))
 		}
-	}
-	if skillChanged || (rep.CLI != nil && rep.CLI.Status == "updated") {
-		notes = append(notes, "this process/session has loaded a component that was just replaced — stop this task and start a new session for the agent; do not continue EDA work in this session")
 	}
 	return notes
 }
@@ -576,8 +556,8 @@ func printUpdateReport(w io.Writer, rep updateReport) {
 	if rep.Ready {
 		fmt.Fprintf(w, "→ READY: CLI/Skills/daemon are exactly v%s; connector major.minor is compatible\n", rep.Target)
 	} else {
-		fmt.Fprintf(w, "→ BLOCKED: behind=%d mismatched=%d unverified=%d restart-required=%t (required: exact CLI/Skills/daemon v%s + compatible connector major.minor)\n",
-			rep.Behind, rep.Mismatched, rep.Unverified, rep.RestartRequired, rep.Target)
+		fmt.Fprintf(w, "→ NOT READY: behind=%d mismatched=%d unverified=%d (target: exact CLI/Skills/daemon v%s + compatible connector major.minor)\n",
+			rep.Behind, rep.Mismatched, rep.Unverified, rep.Target)
 	}
 	for _, n := range rep.Notes {
 		fmt.Fprintf(w, "  ! %s\n", n)

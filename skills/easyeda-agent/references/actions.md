@@ -35,7 +35,7 @@ easyeda sch apply steps.json --dry-run
 easyeda sch apply steps.json --yes
 ```
 
-`--dry-run` 只预检并打印，不执行步骤；`--yes` 仅放行已授权范围内的确认门。
+`--dry-run` 只预检并打印，不执行步骤；`--yes` 对当前任务已授权的计划跳过交互提示。
 不以文档中的示例替代用户授权，也不为已经授权的每个步骤重复请求确认。
 
 Playbook 使用 `version:1`、`meta` 和有序 `steps`。每步只选一种执行方式：
@@ -64,7 +64,7 @@ Playbook 使用 `version:1`、`meta` 和有序 `steps`。每步只选一种执�
 
 | CLI / action | 必要边界 |
 |---|---|
-| `doc ls/switch`，`document.current/open` | 使用工程和页面目标；同名页用 UUID。上下文错误时停止，不写入其他页 |
+| `doc ls/switch/open`，`document.current/open` | 使用工程和页面目标；同名页用 UUID。CLI 同时核对活动 UUID 与对象枚举 settle；只出现目标标签、但对象仍不可读时失败并要求停止写入、修复 typed reload/open 后复测 |
 | `sch list`，`schematic.components.list` | `includeDeviceIdentity` 为重放解析真正库 UUID；`includePins/BBox/Wires` 取得几何基线。非激活页可能是浅数据 |
 | `sch place`，`schematic.component.place` | 使用库 UUID；自动回填可确定的 C 号与空属性是 best-effort，须检查警告。没有 place 自定义属性输入契约 |
 | `sch modify`，`schematic.component.modify` | `otherProperty`/`customAttributes` 二选一，合并保留原属性。`verified:false` 需要再回读，不能当已验证 |
@@ -106,7 +106,7 @@ Playbook 使用 `version:1`、`meta` 和有序 `steps`。每步只选一种执�
 需要自建时按 `lib libraries` 找目标库，再用 `lib device build --spec device.json`
 编排 Symbol、Footprint、可选 3D Model 与 Device；也可分步 create/build/get。
 完整规格先运行 `lib device validate --spec device.json`，它离线核对 PDF 证据、几何字段、
-重复编号以及 symbol pin ↔ footprint pad 集合；通过后 `device build` 会再次执行同一门禁。
+重复编号以及 symbol pin ↔ footprint pad 集合；`device build` 会再次执行同一输入校验，防止写入非法资产。
 PDF 通读、封装变体消歧和规格格式见 [library-authoring.md](library-authoring.md)。
 资产使用可复用的 `EA_AGENT__<ASSET>` 命名，项目来源写属性或描述。create/build 的
 `verified/partial/rollback` 必须核对；删除要求 UUID、library 和 expected-name 精确匹配。
@@ -147,8 +147,8 @@ SyntaxError；执行可能已经产生修改，必须回读。语法拒绝不计
 Altium Designer `.SchDoc` / `.PcbDoc` 当前没有可用的 typed action。官方 beta
 `sys_FileManager.importProjectByProjectFile` 在已报告的 3.2.149 本地工作区会静默返回
 `undefined` 且不产生工程副作用，不能包装后当成功。`sys_FormatConversion` 的 Altium
-入口只适用于 `.SchLib` / `.PcbLib` 库转换。工程迁移使用 EasyEDA Pro GUI，随后按
-[project-import.md](project-import.md) 回读原理图、PCB 和机械数据。
+入口只适用于 `.SchLib` / `.PcbLib` 库转换。工程迁移当前标为 `unsupported`；不得通过
+EasyEDA 交互界面兜底。能力边界与未来 typed 验收见 [project-import.md](project-import.md)。
 
 ## PCB 基础上下文（非穷举）
 
@@ -180,7 +180,8 @@ Altium Designer `.SchDoc` / `.PcbDoc` 当前没有可用的 typed action。官�
    (改名 / 先删 / 用 `eq-group add` 扩展),绝不静默覆盖;
 4. **改绑定要删了重建**:平台对差分对只暴露「改名」,没有「改绑哪两条网」。
 
-⚠ 这些是 `Mutates` 动作 → 改完再读会撞铁律 5 的 `STALE_READ` 门,先 `easyeda doc reload`(实测如此)。
+这些是 `Mutates` 动作。即时读取可能带 `staleRisk`，可用于诊断；最终约束证据使用
+`pcb save → doc reload → list/report`。
 
 ## Board（板子/组合 — 原理图↔PCB 绑定）
 

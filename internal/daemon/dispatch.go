@@ -252,29 +252,6 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 		defer release()
 	}
 
-	// Workflow stage gate (issue #97): routing actions refuse until the
-	// project's persisted stage state authorizes them — enforced HERE, at the
-	// choke point, so a raw /action caller can't bypass the CLI's gates.
-	if errResp := s.checkStageGate(&req); errResp != nil {
-		started := time.Now().UTC()
-		s.audit.Append(fromResponse(started, &req, errResp))
-		writeJSON(w, http.StatusForbidden, *errResp)
-		return
-	}
-
-	// Stale-read gate (SKILL 铁律 5, mechanical): a PCB read on a window mutated
-	// since its last `doc reload` is REFUSED here, not merely annotated — the
-	// advisory version was overridden 1780 times (18.1% of the reads it flagged)
-	// over a 49-day audit window. 409 Conflict, not 403: the caller is not
-	// unauthorized, its view of the document state conflicts with the engine's.
-	// `--force-reason` still gets through, audited. See stalereads.go.
-	if errResp := s.checkStaleRead(&req); errResp != nil {
-		started := time.Now().UTC()
-		s.audit.Append(fromResponse(started, &req, errResp))
-		writeJSON(w, http.StatusConflict, *errResp)
-		return
-	}
-
 	// Connector-FIFO gate (queueblock.go): when a light QUEUED read has been
 	// unanswered for seconds while the BYPASS read still answers, the connector's
 	// per-window action queue is proven stuck behind one wedged handler. Anything
@@ -369,14 +346,12 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 		resp.Warnings = append(resp.Warnings, redirectWarning)
 	}
 	s.persistArtifacts(resp, s.artifactDir(req.OutputDir))
-	// Catalog-driven stage invalidation: a successful placement/outline mutation
-	// clears stale downstream confirmations, whoever the client was.
-	s.maybeInvalidateStage(&req, resp)
-	// Stale-read state machine (SKILL iron rule 5): mark the window after a PCB
-	// mutation, clear on reload/pour-rebuild. The REFUSAL happens before dispatch
-	// (checkStaleRead above); what is left here is the staleRisk annotation for
-	// the reads the gate let through — block-exempt (pcb.snapshot) and forced
-	// ones. See stalereads.go.
+	// Stale-read state machine: mark the window after a PCB mutation, clear on a
+	// real reload/pour-rebuild, and annotate intervening reads with staleRisk.
+	// This is evidence for the caller, not an execution permission check. Batch
+	// workflows that need authoritative final data must save, reload, and read
+	// back; a failed refresh is reported as unavailable rather than unlocked by
+	// a force flag. See stalereads.go.
 	s.staleReads.observe(&req, resp)
 	// Concurrent-writer advisory (issue #108): when a DIFFERENT client mutates
 	// a window another client wrote to recently, annotate the response with a

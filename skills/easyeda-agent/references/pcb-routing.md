@@ -1,7 +1,7 @@
 # EasyEDA PCB — 布线 / 铺铜 / 禁布区 / 填充区域
 
 > 从 [`pcb.md`](pcb.md) 拆出(RFC #178):这几节只在**动铜**时才需要,不该压在每次 PCB 调用的上下文里。
-入口、坐标系、Workflow、Guardrails、`doc reload` 门仍在 `pcb.md` —— **先读它**,再按需读本文件。
+入口、坐标系、正确性检查与写后回读语义仍在 `pcb.md` —— **先读它**,再按需读本文件。
 
 ---
 
@@ -9,7 +9,8 @@
 
 `pcb route-critical --spec <S0.json> --dry-run` 先检查真实铜层数与关键网方案。
 执行时沿用同一份 spec；`stackup.layers` 与活板不一致，或读不到可靠铜层证据，
-命令会在布线前拒绝。先用 `pcb layers` 检查；遇 `STALE_READ` 按提示 reload 后重读。
+命令会因缺少可靠叠层输入而拒绝非法计划。先用 `pcb layers` 检查；即时读取若带 `staleRisk`，
+可用于诊断，最终叠层证据在 save/reload 后重读。
 不把未启用的内层、图层总数或默认两层当成真实叠层。
 
 - 两层板的电源步走 `pcb power-pour`；四层及以上走 `pcb power-planes`。
@@ -23,16 +24,16 @@
 
 ### Routing (copper tracks + vias)
 
-Real routing primitives — **additive creates** (no confirm), like the schematic
+Real routing primitives — **additive creates**, like the schematic
 `wire.create`. Bind to a net **by name** (pull from `pcb.nets.list`); layer ids from
 `pcb.layers.list`. EasyEDA's `create()` is **lenient** — it can return no primitive on a
 bad layer/coords without throwing, so each action verifies a primitive came back and
 fails honestly otherwise. **PCB autosave is on** (debounced) — still **save explicitly**
 at checkpoints. There is **no one-call autorouter** on this build
 (`pcb_Document.autoRouting` is undefined — see `docs/ecosystem-survey.md` §6/§7); route
-segment-by-segment, or use the file-exchange autoroute flow. **布线档如何选见
-[`design-flow.md`](./design-flow.md) P7 三档阶梯——稠密板默认不是 file-exchange autoroute,而是
-请用户点 EasyEDA 原生「布线→自动布线」(人机协作档);Freerouting 仅全 headless 无人可点时兜底。**
+segment-by-segment, or use the file-exchange autoroute flow. 布线方式见
+[`design-flow.md`](./design-flow.md) P7：稀疏短线可逐段或 `route-short`，稠密板使用题目允许的
+EasyEDA 原生自动布线或已配置的外部路由器，完成后都按网回读并运行 DRC。
 
 - `pcb.line.create` — a copper **track** (导线): line segment on a copper layer
   (`TOP=1`, `BOTTOM=2`; **inner-copper ids are higher** — `id 3` is silkscreen, not
@@ -154,9 +155,9 @@ easyeda pcb eq-group delete --name DDR_ADDR
 **要点**(真机验过):网名**前置校验**,指向板上没有的网 = 零写入拒绝并点名(网名大小写敏感、来自
 原理图,用 `easyeda pcb nets` 取准);回执的 `verified` 是连接器**重读比对**出来的,不是平台返回值;
 同名同内容重建 = `alreadyExists`(可重放),同名不同内容 = 拒绝并给下一步;差分对**只能改名**,
-要换绑定得删了重建。改完再读先 `easyeda doc reload`(铁律 5 的 `STALE_READ` 门会拦)。
+要换绑定得删了重建。改完可即时读取诊断；最终证据使用 `pcb save → doc reload → list/report`。
 
-**在流程里的位置**:P7 布线之前建好 → `route-critical` / 手工布线 → `easyeda pcb report` 回读
+**在流程里的位置**:P7 布线之前建好 → `route-critical` / typed track action → `easyeda pcb report` 回读
 skew/spread 验收。
 
 ### Copper pour (铺铜)
@@ -299,7 +300,7 @@ subset; `--dry-run` prints the per-corner plan. Save after placing; delete via
 > to the human/UI. **Shipped: copper pour + rip-up (R1/R2).** **net-class WIDTHS
 > are shipped daemon-side** (R3-width): `pcb net-classes` prints the role→spec-width
 > ladder, `route-short` sizes each net by role (signal / power-branch / power-trunk /
-> high-current — `pcb_netclass.go`), and `pcb check` **width-under-spec** gates
+> high-current — `pcb_netclass.go`), and `pcb check` **width-under-spec** reports
 > under-sized power tracks. Still pending: writing those roles into EasyEDA's NATIVE
 > net-class rules (`createNetClass`/`overwriteNetRules`, @beta — so the native DRC
 > enforces per-class width) + diff-pair/equal-length **definitions** (read side is

@@ -1,7 +1,7 @@
 # PCB 功能支持全景(CLI 视角)
 
-`easyeda pcb` 域(含 `workflow` 阶段门)的**当前能力清单 + 待支持路线**。定位:AI agent
-从原理图同步到制造导出,全程 typed CLI 操作,每步可观测、可校验、被阶段门机械把关。
+`easyeda pcb` 域(含兼容用 `workflow` 记录)的**当前能力清单 + 待支持路线**。定位:AI agent
+从原理图同步到制造导出,全程 typed CLI 操作,每步可观测、可校验。
 
 > 动作目录真值:`easyeda actions`;流程编排(P0–P10 何时用哪条)见
 > [`design-flow.md`](../../skills/easyeda-agent/references/design-flow.md);
@@ -17,19 +17,19 @@
 | 新建板并绑定 | `pcb new-board` | 从原理图建板+空 PCB 页并绑定(CLI 版「原理图转 PCB」);`--force` 对已绑板是破坏性操作 |
 | 网表同步 | `pcb import-changes` | 原理图 → PCB 增量同步(平台对 API 新增器件是 no-op,首次同步前放完整电路) |
 | 单件补挂 | `pcb add-component` | 往已有 PCB 加单个器件并连接焊盘网络(绕过失效的增量同步) |
-| 文档/视图 | `doc reload` / `pcb snapshot` / `pcb view-mode` 相关 | mutation 后必须 reload 再读(stale 防线);快照带 stale 检测 |
+| 文档/视图 | `doc reload` / `pcb snapshot` / `pcb view-mode` 相关 | 写后读取会标注 stale 风险；权威批次以 save → reload → readback 收尾 |
 
 ### 2. 布局
 
 | 能力 | 命令 | 说明 |
 |---|---|---|
-| 板框 | `pcb outline` / `outline-fit` / `outline-round` | 真板框对象(锁定 polyline,DRC 认);贴合器件 / 圆角矩形;`pcb.outline.get` 返回真多边形 |
+| 板框与原点 | `pcb outline` / `outline-fit` / `outline-round` / `origin get/set` | `outline-round` 生成含原生 ARC 的闭合锁定板框；`outline-get` 回读中心线尺寸、半径、线宽、锁定与弧数；origin 只改显示坐标，不移动几何 |
 | 角色感知自动摆放 | `pcb auto-place` / `place-constrained` | 卫星贴其所连芯片侧、2 脚件自动转向、间距规则感知;规划后按 blocking 复算合法化(重叠/短路/出框就地重定位) |
 | 分区规划 | `pcb floorplan` / `pcb zones` | S0 spec 驱动的有序带切分(只读)+ 分区认领 |
-| 分档确认 | `pcb stage confirm-tier 1-4` / `set-assembly` | 孔→边缘件→主芯片+RF→卫星逐档落盘;装配档案(手焊 40mil/烙铁通道 60mil)持久化进 lint 门 |
-| 布局硬门 | `pcb layout-lint --gate` | 重叠/紧间距/可布性(飞线 MST+交叉)/手焊可达性(no-access);唯一的布局门 |
+| 分档记录 | `pcb stage confirm-tier 1-4` / `set-assembly` | 兼容保留孔→边缘件→主芯片+RF→卫星的历史记录；不决定后续动作能否执行 |
+| 布局检查 | `pcb layout-lint` | 报告重叠/紧间距/可布性(飞线 MST+交叉)/手焊可达性(no-access)的具体事实 |
 | 布局质量分 | `pcb layout-score` | 九维 0-100+逐器件归因(partition/flow-order/edge-io/protection/tidy/compact/rf/routable/clearance),blocking 一票否决;`--part` 器件聚焦视角;金标准五真板校准(`make layout-calibrate`) |
-| 打分驱动精修 | `pcb refine` | 读归因对最弱维做确定性变换,每步复核可回滚;锁定件/已签字档不动 |
+| 打分驱动精修 | `pcb refine` | 读归因对最弱维做确定性变换,每步复核可回滚;锁定件不动，历史签字档仅作提示 |
 | 编组式移动 | `pcb components move` 类 | 无状态刚体移动(持久编组见路线 §1) |
 
 ### 3. 布线
@@ -49,7 +49,7 @@
 | 铺铜 | `pcb pour` / `pour-fit` / `pour-rebuild` | 规则感知内缩;`pour-fit --replace` 默认清跨层同网 pour(顶/底要显式关) |
 | 4 层电源树 | `pcb power-planes` | GND+电源各占专用内平面+每焊盘过孔缝合;GND 内层翻成真 PLANE 的验证配方 |
 | 缝合/填充 | `pcb via-stitch` / `pcb fill` | 接地缝合过孔阵 / 实心填充 |
-| 禁布区 | `pcb region` / `pcb antenna-keepout` | 禁铺/禁走线区;天线 keepout 按块库声明全层生成 |
+| 禁布区 | `pcb region` / `pcb antenna-keepout` / `lib footprint region` | 板级禁铺/禁走线区；天线 keepout 按块库声明全层生成；封装副本可写 region 并保存回读，实例绑定仍须现场核对 |
 | 挖槽 | `pcb slot` | 板内挖空(MULTI 层) |
 
 ### 5. 丝印与标注
@@ -57,7 +57,7 @@
 | 能力 | 命令 | 说明 |
 |---|---|---|
 | 位号避让重排 | `pcb silk-align` | 位置感知:4 方向打分避开焊盘/器件体/禁区/板框/其它标签;挤死的如实报告 |
-| 自由丝印 | `pcb silk-add` / `silk-set` | 板注/极性标记,层/字号/线宽/旋转可配;`--align --ref` 对齐参考 |
+| 自由丝印 | `pcb silk-add` / `silk-set` | 板注/极性标记,层/字号/线宽/旋转/`--font-family` 可配并回读实际字体；`--align --ref` 对齐参考 |
 | 矢量图形 | `pcb silk-import-svg` | SVG(logo/品牌)转填充丝印图元,dry-run 预览 |
 
 ### 6. 叠层、规则与制造
@@ -65,9 +65,9 @@
 | 能力 | 命令 | 说明 |
 |---|---|---|
 | 叠层 | `pcb stackup` | 2–32 铜层 + 内层类型(信号↔内电层) |
-| 规则 | `pcb drc-rules` / `pcb net-classes` | 读 live DRC 规则全链路遵循;缺失回退 JLCPCB 工艺地板(clamp,绝不低于制造最小值) |
+| 规则 | `pcb drc-rules` / `drc-rules-set --from` / `net-class list/create` / `net-classes` | 完整规则与真实 EasyEDA 网络类可写入、回读和失败回滚；复数 `net-classes` 是路由器的启发式线宽表，不能冒充持久化网络类 |
 | 检查 | `pcb drc` / `pcb check` | 官方 DRC + 重建的逐项检查(电源未铺铜/线宽不达规范/丝印压焊盘/连接器贴边与插拔通道等,报错带 `[规范 §N]` 指向手册章节) |
-| 阶段门禁 | `workflow status/advance` | 布线前 `outline_confirmed`+`pre_route_passed`、布完 `post_route_checked` 机械强制(daemon 派发层拦截,raw 调用绕不过);确认绑定文档指纹,门外改动自动失效 |
+| 历史流程记录 | `workflow status/advance` | 兼容读取/记录 `outline_confirmed`、`pre_route_passed`、`post_route_checked`；typed action 不再据此拒绝执行 |
 
 ## 二、待支持 / 路线
 

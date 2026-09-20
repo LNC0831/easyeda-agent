@@ -1239,15 +1239,8 @@ func (r *applyRunner) captureAndAssert(capture, assert map[string]string, result
 // runVerify executes a step's verify block (read-back + assert). True = the
 // original mutation is confirmed landed.
 //
-// verify 块**按定义**跑在一次变更之后 —— 它存在的唯一理由就是「刚才那笔写落地了
-// 吗」。所以它天生是写后回读,天生撞 STALE_READ 门(stale_read_optin.go),而
-// playbook 又是从真实会话录出来的:录到什么顺序就回放什么顺序,mutate 步后面就是
-// verify,中间不会凭空多出一条 `doc reload`。
-//
-// 放行位在这里必须用**作用域全局**而不是 cfg 副本:verify 可以是 `run:` 子命令,
-// 而 runSubcommand 是进程内重走一遍 Run(),那边新建 appConfig,副本传不过去。
-// defer 把生存期严格框在本函数内 —— 步骤本体、下一步、以及重试之间的等待,都不
-// 在放行窗口里。
+// verify 块按定义跑在一次变更之后，用回读回答“刚才那笔写是否落地”。
+// setDispatchStaleReadReason 保留为旧 playbook 的 no-op 兼容调用。
 func (r *applyRunner) runVerify(v *verifyBlock, timeout time.Duration) bool {
 	defer setDispatchStaleReadReason("apply playbook verify 块:核对上一步的变更是否落地")()
 

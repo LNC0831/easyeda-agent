@@ -1,14 +1,28 @@
 package app
 
 import (
+	"io"
 	"testing"
 
 	"github.com/zhoushoujianwork/easyeda-agent/internal/workflow"
 )
 
-// Issue #97 regression: the PCB flow must not let routing proceed without
-// outline_confirmed + pre_route_passed, and any placement/outline mutation must
-// invalidate downstream confirmations.
+func TestCompositeRouteCommandIgnoresLegacyStageState(t *testing.T) {
+	cfg := &appConfig{}
+	if err := gateRouteCommand(cfg, "missing-window", "route-short", "", "", io.Discard); err != nil {
+		t.Fatalf("missing/unconfirmed workflow state must not block routing: %v", err)
+	}
+	if err := gateRouteCommand(cfg, "missing-window", "route-critical", "legacy force", "legacy unsafe", io.Discard); err != nil {
+		t.Fatalf("legacy force options are compatibility no-ops: %v", err)
+	}
+	if cfg.forceReason != "" || cfg.forceUnsafe {
+		t.Fatalf("legacy workflow options must not mutate request authorization: %+v", cfg)
+	}
+}
+
+// Historical workflow-state calculations remain readable for old commands and
+// reports. They no longer authorize composite routing; that compatibility
+// contract is pinned separately below.
 
 func newTestStageState() *pcbStageState {
 	return &pcbStageState{Project: "test", Confirmed: map[pcbStage]bool{}}

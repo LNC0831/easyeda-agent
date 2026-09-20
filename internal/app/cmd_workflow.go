@@ -11,41 +11,31 @@ import (
 	"github.com/zhoushoujianwork/easyeda-agent/internal/workflow"
 )
 
-// cmd_workflow.go — the `easyeda workflow` group (issue #97 follow-up): the
-// project-level fixed workflow over the persisted stage state.
-//
-// The point (from the issue): stage state and acceptance results must be
-// PERSISTED per project and CONSUMED by later commands — never dependent on an
-// agent remembering the skill. A user (or another agent) may also cut in at ANY
-// stage and edit directly; `workflow status --reconcile` re-derives where the
-// document actually is (live facts + fingerprint drift), auto-invalidates stale
-// confirmations, and `workflow advance` idempotently walks the flow forward,
-// always printing the exact next command — so after any out-of-band edit the
-// flow simply continues from the right stage.
+// cmd_workflow.go — compatibility viewer/recorder for the former project-level
+// workflow state machine. It may calculate the old next step for existing
+// scripts, but normal actions never consult its result.
 
 // newWorkflowCmd builds the `workflow` group.
 func newWorkflowCmd(cfg *appConfig, stdout, stderr io.Writer) *cobra.Command {
 	var window string
 	wf := &cobra.Command{
 		Use:   "workflow",
-		Short: "Project design-flow state machine: init / status / advance / confirm / reset / pages (issue #97)",
-		Long: `Per-project persisted workflow over the PCB design flow.
+		Short: "Deprecated project checklist: init / status / advance / confirm / reset / pages",
+		Long: `Compatibility interface for the former per-project PCB workflow.
 
-Stages (rank order):
+Historical stages:
   imported → placement_ready → placement_confirmed → outline_confirmed
            → pre_route_passed → routing_authorized
 
-Hard rules (enforced by the CLI route commands AND the daemon at /action):
-  • routing (route-short / autoroute / pcb.line.create / pcb.via.create /
-    pcb.import_autoroute) refuses without outline_confirmed + pre_route_passed;
-  • any placement/outline mutation invalidates the downstream confirmations;
-  • confirmations are pinned to document fingerprints — an edit the flow never
-    saw (GUI drag, debug.exec_js, another agent) is detected and invalidates;
-  • --force <reason> on a route command is a per-run, audited override.
+No stage is an execution permission. Route, placement, outline and raw typed
+actions run from live project data regardless of these records. Mutations no
+longer cascade through confirmations, and legacy --force options are no-ops.
+Use connectivity, geometric checks, DRC and save/reload/readback as evidence.
 
 State lives at ~/.easyeda-agent/workflow/<project>.json (EASYEDA_WORKFLOW_DIR
-to override). Cut in at any stage: run 'workflow status --reconcile' to re-sync
-the marker with the real document, then 'workflow advance' to continue.`,
+to override). Existing scripts may inspect or append it; ` + "`status`" + ` and
+` + "`advance`" + ` describe only the deprecated checklist and do not control
+other commands.`,
 	}
 	wf.PersistentFlags().StringVar(&window, "window", "", "EasyEDA window ID (else use --project)")
 
@@ -105,22 +95,22 @@ func workflowNext(st *pcbStageState, f workflowFacts) (next, why string) {
 	case !st.Has(stagePlacementConfirmed):
 		if st.Layout == nil || st.Layout.TightPairs != 0 || st.Layout.AccessBlocked != 0 {
 			return "easyeda pcb layout-lint --gate",
-				"placement not lint-gated yet (P2: fix overlaps/tight pairs/iron access, then gate)"
+				"legacy P2 record has no compatible layout diagnostic snapshot"
 		}
 		return "easyeda pcb stage confirm-layout --note \"...\"",
-			"placement awaits the P2 human sign-off"
+			"legacy P2 placement record is absent (does not block PCB actions)"
 	case f.Reachable && f.OutlineSegs == 0:
 		return "easyeda pcb outline-fit",
 			"no board outline yet (P3)"
 	case !st.Has(stageOutlineConfirmed):
 		return "easyeda pcb stage confirm-outline --note \"...\"",
-			"outline awaits the P3 human sign-off"
+			"legacy P3 outline record is absent (does not block PCB actions)"
 	case !st.Has(stagePreRoutePassed):
 		return "easyeda pcb layout-lint --gate",
-			"routability gate not passed since the last change (P6)"
+			"legacy P6 diagnostic record is absent (does not block routing)"
 	case f.RoutedLines == 0:
 		return "easyeda pcb route-short   (or autoroute)",
-			"routing is authorized (P7)"
+			"legacy checklist reached the routing step (P7; diagnostic only)"
 	case !st.Has(stagePostRouteChecked):
 		return "easyeda workflow advance   (runs the pcb-check gate)",
 			"board is routed but the post-route check gate (布完必查) has not passed (P7.9): ERRORs + power-not-poured + width-under-spec must be zero"
@@ -239,17 +229,15 @@ func reconcileWorkflow(cfg *appConfig, window string, st *pcbStageState, f workf
 			notes = append(notes, "outline is gone — cleared "+strings.Join(stageNames(cleared), ", "))
 		}
 	}
-	// Routing that predates authorization: report, never bless.
+	// Routing that predates the historical record is informational only.
 	if f.RoutedLines > 0 && !st.Has(stageRoutingAuthorized) {
 		notes = append(notes, fmt.Sprintf(
-			"%d routed line(s) exist but routing was never authorized — rip up (`pcb clear-routing`) or complete the gates before continuing",
+			"%d routed line(s) exist while the legacy routing checklist is incomplete — board data is kept; inspect live copper and DRC",
 			f.RoutedLines))
 	}
-	// Post-route check drift (WEAK: track count only — there is no routing
-	// fingerprint yet). Copper changed since the check gate passed → the audit
-	// is stale; invalidate so advance re-runs it. The daemon-side
-	// InvalidatesStage already catches typed-action edits; this catches GUI /
-	// exec_js edits at reconcile time.
+	// Post-route record drift (WEAK: track count only — there is no routing
+	// fingerprint yet). Copper changed since the historical snapshot, so refresh
+	// that compatibility record when the user explicitly asks to reconcile.
 	if st.Has(stagePostRouteChecked) && st.Check != nil && st.Check.Tracks != f.RoutedLines {
 		if cleared := st.InvalidateFrom(stagePostRouteChecked,
 			fmt.Sprintf("routed copper changed since the check gate (%d → %d tracks)", st.Check.Tracks, f.RoutedLines)); len(cleared) > 0 {
@@ -275,9 +263,9 @@ func stageNames(stages []pcbStage) []string {
 func newWorkflowInitCmd(cfg *appConfig, window *string, stdout, stderr io.Writer) *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
-		Short: "Initialize (or restart) the project's workflow marker",
-		Long: `Create a fresh workflow record for the project (or wipe an existing one back
-to 'imported'). Run once when starting a board; then follow 'workflow advance'.`,
+		Short: "Initialize (or restart) the deprecated project checklist",
+		Long: `Create a fresh compatibility record for the project (or wipe an existing
+one back to 'imported'). This does not initialize, authorize or reset the board.`,
 		Args:    cobra.NoArgs,
 		Example: `  easyeda workflow init --project ceshi`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -313,21 +301,21 @@ func newWorkflowStatusCmd(cfg *appConfig, window *string, stdout, stderr io.Writ
 	var asJSON, reconcile bool
 	c := &cobra.Command{
 		Use:   "status",
-		Short: "Show the workflow state; --reconcile re-syncs it with the live document",
-		Long: `Print the persisted stage state and the computed next step.
+		Short: "Show deprecated checklist state; --reconcile compares it with the live document",
+		Long: `Print the persisted compatibility state and its historical next step.
 
 Also renders the layout-quality snapshot confirm-layout recorded (#167):
 overall score, weakest dimensions, skipped-dimension count and timestamp.
 
 --reconcile additionally pulls the LIVE document (component count, outline,
 routed lines), re-verifies the confirmation fingerprints, auto-invalidates
-anything that drifted, and reports inconsistencies (e.g. routing that predates
-authorization). It also re-scores the layout and diffs it per dimension
+historical records that drifted, and reports inconsistencies. This changes only
+the checklist file; it never changes or blocks the board. It also re-scores the layout and diffs it per dimension
 against the stored quality snapshot — a dimension that dropped ≥5 points is
 flagged; one that went scored→skipped is reported as "lost measurability",
 never as a drop to 0 (没测≠没变). Quality findings are advisory only and
 never affect the exit code. Use it whenever you (or anyone) edited outside
-the flow.`,
+the historical checklist.`,
 		Args: cobra.NoArgs,
 		Example: `  easyeda workflow status --project ceshi
   easyeda workflow status --project ceshi --reconcile`,
@@ -365,14 +353,15 @@ the flow.`,
 				enc := json.NewEncoder(stdout)
 				enc.SetIndent("", "  ")
 				out := map[string]any{
-					"project":      st.Project,
-					"confirmed":    st.Confirmed,
-					"assembly":     st.Assembly,
-					"layoutGate":   st.Layout,
-					"routeAllowed": gate.Allowed,
-					"missing":      gate.Missing,
-					"next":         next,
-					"nextReason":   why,
+					"project":           st.Project,
+					"confirmed":         st.Confirmed,
+					"assembly":          st.Assembly,
+					"layoutGate":        st.Layout,
+					"routeAllowed":      gate.Allowed,
+					"missing":           gate.Missing,
+					"next":              next,
+					"nextReason":        why,
+					"compatibilityOnly": true,
 				}
 				if reconcile {
 					out["facts"] = facts
@@ -381,7 +370,7 @@ the flow.`,
 				}
 				return enc.Encode(out)
 			}
-			fmt.Fprintf(stdout, "workflow — project %q\n", stageProjectLabel(project))
+			fmt.Fprintf(stdout, "legacy workflow checklist — project %q\n", stageProjectLabel(project))
 			for _, s := range pcbStageOrder {
 				mark := "○"
 				if st.Has(s) {
@@ -407,16 +396,16 @@ the flow.`,
 				}
 			}
 			if gate.Allowed {
-				fmt.Fprintln(stdout, "  routing: ✅ authorized")
+				fmt.Fprintln(stdout, "  legacy checklist: complete for routing (diagnostic only)")
 			} else {
-				fmt.Fprintf(stdout, "  routing: ❌ blocked — missing %s\n", strings.Join(gate.Missing, ", "))
+				fmt.Fprintf(stdout, "  legacy checklist: incomplete — missing %s (does not block actions)\n", strings.Join(gate.Missing, ", "))
 			}
-			fmt.Fprintf(stdout, "next: %s\n  (%s)\n", next, why)
+			fmt.Fprintf(stdout, "legacy next: %s\n  (%s)\n", next, why)
 			return nil
 		},
 	}
 	c.Flags().BoolVar(&asJSON, "json", false, "emit as JSON")
-	c.Flags().BoolVar(&reconcile, "reconcile", false, "pull the live document, verify fingerprints, auto-invalidate drift")
+	c.Flags().BoolVar(&reconcile, "reconcile", false, "compare with the live document and refresh only the deprecated checklist record")
 	return c
 }
 
@@ -426,21 +415,19 @@ func newWorkflowAdvanceCmd(cfg *appConfig, window *string, stdout, stderr io.Wri
 	var minScore, maxCrossings int
 	c := &cobra.Command{
 		Use:   "advance",
-		Short: "Reconcile, run the next MECHANICAL acceptance, and say what comes next",
-		Long: `Idempotently walk the workflow forward:
+		Short: "Advance the deprecated checklist and print its historical next step",
+		Long: `Walk the deprecated checklist forward for compatibility:
 
   1. reconcile the marker with the live document (fingerprints, counts);
   2. if the next step is MECHANICAL (the layout-lint routability gate), run it;
   3. print the exact next command.
 
-Human sign-offs (confirm-layout / confirm-outline) are never auto-performed —
-advance exits non-zero when it is blocked on one, so scripted loops stop at
-exactly the points a human must approve.
+Historical layout/outline records are never auto-created. This command may exit
+non-zero when its own legacy checklist is incomplete; that exit code does not
+authorize or refuse any layout, outline, routing or typed action.
 
-Exit code: 0 only when the flow is free to continue. Non-zero when it is blocked
-on a human sign-off, when a mechanical gate REJECTS (post-route pcb check found
-blocking findings), or when a gate cannot run — so 'set -e' scripts and CI loops
-stop at every acceptance, not just the human ones.`,
+Use direct factual checks for new automation rather than this compatibility exit
+code.`,
 		Args:    cobra.NoArgs,
 		Example: `  easyeda workflow advance --project ceshi`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -539,7 +526,7 @@ func newWorkflowConfirmCmd(cfg *appConfig, window *string, stdout, stderr io.Wri
 	var note string
 	c := &cobra.Command{
 		Use:   "confirm <layout|outline>",
-		Short: "Record a human sign-off (same as `pcb stage confirm-layout/-outline`)",
+		Short: "Record a historical layout/outline checklist entry (no execution permission)",
 		Args:  cobra.ExactArgs(1),
 		Example: `  easyeda workflow confirm layout --project ceshi --note "USB-C out, antenna top"
   easyeda workflow confirm outline --project ceshi --note "40×25mm"`,
@@ -565,7 +552,8 @@ func newWorkflowResetCmd(cfg *appConfig, window *string, stdout io.Writer) *cobr
 	var all bool
 	c := &cobra.Command{
 		Use:     "reset",
-		Short:   "Clear a confirmation and everything downstream (or --all)",
+		Short:   "Clear deprecated checklist entries (or --all)",
+		Long:    "Clear only the historical workflow record. This does not change, reset or unlock the PCB.",
 		Args:    cobra.NoArgs,
 		Example: `  easyeda workflow reset --all --project ceshi`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -588,7 +576,7 @@ func newWorkflowResetCmd(cfg *appConfig, window *string, stdout io.Writer) *cobr
 			}
 			enc := json.NewEncoder(stdout)
 			enc.SetIndent("", "  ")
-			return enc.Encode(map[string]any{"ok": true, "cleared": stageNames(cleared)})
+			return enc.Encode(map[string]any{"ok": true, "cleared": stageNames(cleared), "compatibilityOnly": true})
 		},
 	}
 	c.Flags().StringVar(&from, "from", "", "stage to clear from (inclusive)")

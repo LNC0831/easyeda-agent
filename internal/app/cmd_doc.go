@@ -91,12 +91,18 @@ func newDocCmd(cfg *appConfig, stdout, stderr io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if cur.Context == nil || cur.Context.DocumentUUID != match.UUID {
+				return fmt.Errorf("document.open returned but active document is not %s; the page may still be loading", match.UUID)
+			}
 			// document.open returns as soon as the tab exists — BEFORE the page's
 			// primitives/netlist finish loading. Wait for the page data to settle
 			// so a read fired right after the switch doesn't sample a half-loaded
 			// page (issue #67). The probe follows the document type — a PCB is
 			// polled with pcb.components.list rather than skipped (issue #161).
 			ready := waitDocSettleFor(cfg, win, match.Type)
+			if !ready {
+				return fmt.Errorf("document %s became active but its %s data did not settle; refresh the editor or open it once from the project tree, then read back actual objects", match.UUID, match.Type)
+			}
 			out := map[string]any{
 				"switchedTo": match,
 				"ready":      ready,
@@ -108,9 +114,6 @@ func newDocCmd(cfg *appConfig, stdout, stderr io.Writer) *cobra.Command {
 				return writeJSON(stdout, out)
 			}
 			fmt.Fprintf(stdout, "✓ switched to %s %q (%s)\n", match.Type, match.Name, match.UUID)
-			if !ready {
-				fmt.Fprintln(stdout, "⚠ page did not settle within the wait window — data may still be loading; re-read if results look empty")
-			}
 			return nil
 		},
 	}
@@ -142,8 +145,15 @@ func newDocCmd(cfg *appConfig, stdout, stderr io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if cur.Context == nil || cur.Context.DocumentUUID != match.UUID {
+				return fmt.Errorf("document.open returned but active document is not %s; the page may still be loading", match.UUID)
+			}
+			if !waitDocSettleFor(cfg, win, match.Type) {
+				return fmt.Errorf("document %s became active but its %s data did not settle; refresh the editor or open it once from the project tree, then read back actual objects", match.UUID, match.Type)
+			}
 			out := map[string]any{
 				"opened": match,
+				"ready":  true,
 			}
 			if cur.Context != nil {
 				out["active"] = cur.Context
@@ -435,6 +445,9 @@ func reloadDocumentByUUID(cfg *appConfig, win, target string) (string, error) {
 		if cur.Context == nil || cur.Context.DocumentUUID != target || cur.Context.TabID == "" {
 			return "", fmt.Errorf("could not activate document %s before reload (active=%v)", target, cur.Context)
 		}
+		if !waitDocSettleFor(cfg, win, cur.Context.DocumentType) {
+			return cur.Context.DocumentType, fmt.Errorf("document %s became active before reload but its data did not settle", target)
+		}
 	}
 	docType := cur.Context.DocumentType
 	saveAction := "schematic.save"
@@ -444,19 +457,58 @@ func reloadDocumentByUUID(cfg *appConfig, win, target string) (string, error) {
 	if _, err := requestAction(cfg, saveAction, win, nil); err != nil {
 		return docType, fmt.Errorf("save before reload failed: %w", err)
 	}
-	closeJS := fmt.Sprintf("return await eda.dmt_EditorControl.closeDocument(%q)", cur.Context.TabID)
-	if _, err := requestAction(cfg, "debug.exec_js", win, map[string]any{"code": closeJS}); err != nil {
+	// Preserve the TARGET tab's split before closing it. Looking the split up
+	// after close is racy: Web EasyEDA 3.2.203 can expose a transient blank tab
+	// (or a tab from another split), and opening into that inferred destination
+	// leaves the editor on an endless loading animation.
+	closeJS := fmt.Sprintf(`let splitScreenId;
+try { splitScreenId = await eda.dmt_EditorControl.getSplitScreenIdByTabId(%q); } catch (_) {}
+const closed = await eda.dmt_EditorControl.closeDocument(%q);
+return { closed, splitScreenId: typeof splitScreenId === 'string' ? splitScreenId : '' };`, cur.Context.TabID, cur.Context.TabID)
+	closeRes, err := requestAction(cfg, "debug.exec_js", win, map[string]any{"code": closeJS})
+	if err != nil {
 		return docType, fmt.Errorf("close document failed: %w", err)
 	}
-	time.Sleep(1 * time.Second)
-	if _, err := requestAction(cfg, "document.open", win, map[string]any{"uuid": target}); err != nil {
-		return docType, fmt.Errorf("reopen after close failed: %w", err)
+	closeValue, _ := closeRes.Result["value"].(map[string]any)
+	closed, _ := closeValue["closed"].(bool)
+	if !closed {
+		return docType, fmt.Errorf("close document returned no success for %s; reopen was not attempted", target)
+	}
+	splitScreenID, _ := closeValue["splitScreenId"].(string)
+	splitScreenID = strings.TrimSpace(splitScreenID)
+
+	// closeDocument's promise can resolve before the editor has removed the old
+	// active tab. Opening the same UUID during that interval is the second path
+	// to the permanent loading spinner. Prove the old document is inactive; on
+	// timeout, stop without issuing openDocument at all.
+	closeDeadline := time.Now().Add(10 * time.Second)
+	for {
+		cur, err = requestActionTimed(cfg, "document.current", win, nil, 3*time.Second)
+		noActiveDocument := cur != nil && strings.Contains(cur.errorMsg, "No active document")
+		if noActiveDocument || (err == nil && (cur.Context == nil || cur.Context.DocumentUUID != target)) {
+			break
+		}
+		if time.Now().After(closeDeadline) {
+			return docType, fmt.Errorf("document %s close did not settle within 10s; reopen was not attempted to avoid a duplicate open — check the existing tab, then refresh the editor if it is still loading", target)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	openPayload := map[string]any{"uuid": target}
+	if splitScreenID != "" {
+		openPayload["splitScreenId"] = splitScreenID
+	}
+	if _, err := requestActionTimed(cfg, "document.open", win, openPayload, 15*time.Second); err != nil {
+		return docType, fmt.Errorf("reopen after close failed for %s (the target tab is closed; automatic retry was suppressed because the first open may still complete): %w — recover by refreshing the editor or opening the document once from the project tree", target, err)
 	}
 	// Poll until the reopened document is the live active one.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		cur, err = requestAction(cfg, "document.current", win, nil)
 		if err == nil && cur.Context != nil && cur.Context.DocumentUUID == target {
+			if !waitDocSettleFor(cfg, win, docType) {
+				return docType, fmt.Errorf("document %s became active after reopen but its %s objects did not settle; refresh the editor or open it once from the project tree, then read back actual objects", target, docType)
+			}
 			return docType, nil
 		}
 		if time.Now().After(deadline) {

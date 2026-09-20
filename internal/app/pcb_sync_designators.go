@@ -83,10 +83,8 @@ type pcbDesignatorRow struct {
 // 有没有活要干」应该先于「连接器够不够新」回答 —— 否则一块位号本来就正常的板，
 // 在旧连接器上会被误报成错误。
 //
-// afterWrite 是**写后回读放行理由**(stale_read_optin.go)。本函数的两处调用都跑在
-// 一次 PCB 写之后 —— 规划读跟在 import_changes 后面(读的正是刚导进来的那批件)，
-// 复核读跟在 component.modify 后面(读的正是刚写的那批位号) —— 所以两处都必须
-// 显式带理由,否则会被 daemon 的 STALE_READ 门拦死。留空 = 不放行。
+// afterWrite 保留调用方的回读语境。规划读跟在 import_changes 后面，复核读跟在
+// component.modify 后面；当前 daemon 返回 staleRisk 提示但不以许可状态拒绝。
 func fetchPcbDesignators(cfg *appConfig, window, afterWrite string) ([]pcbDesignatorRow, error) {
 	res, err := requestReadAfterWrite(cfg, "pcb.components.list", window, nil, afterWrite)
 	if err != nil {

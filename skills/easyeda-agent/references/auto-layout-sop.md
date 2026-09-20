@@ -42,7 +42,8 @@ compose/Apply。报告为预算耗尽或限定范围无路径只表示有界失�
 重算。失败命令不得生成或覆盖几何输出。
 direct 放置前沿、整网撤线重布和阻挡器件/attachment 刚体迁移都由同一内核执行；迁移先试
 主轴向外 5/10 raw，再按 5 raw 扩展到 40 raw。已合并线树可从真实中段/T/端点垂直接出
-命名，但命名成功不能反向证明 direct 已连接。检查报告中的指定线岛合并证据仍是硬门。
+命名，但命名成功不能反向证明 direct 已连接。检查报告中的指定线岛合并证据仍是进入 Apply 前
+必须核对的连接不变量。
 用户确认拆出完整功能子电路时，先仅修改成员归属与边界绘图策略，保留 pin→net/NC；
 需要相邻阅读时声明 placement.samePageAs 与 preferAdjacent，再走相同完整出图链路。
 若拆分使核心接口同侧留下多个同名信号 `module_port` 引脚，区内求解必须先把它们合成真实
@@ -68,9 +69,10 @@ easyeda sch compose --from composition.json --layout-page page.json --out plan.j
   --before page-before.json --replace --playbook apply.json
 ```
 
-该入口仅离线验证与刚体平移，仍复用完整受保护 Apply；不自动创建/合并/删除页面。
+该入口仅离线验证与刚体平移，仍复用可检查的完整 Apply 队列；不自动创建/合并/删除页面。
 转换功能仅在新源码中存在时，可离线编译但不能据此声称安装版已支持；实际执行前须用
-当前版本 CLI 完成队列 dry-run 和版本门禁，不能绕过运行时升级后的新会话要求。
+当前版本 CLI 完成队列 dry-run，并以 `--help` 核对安装态命令签名。需要安装对账时显式运行
+`easyeda update --check`；版本状态不许可或拒绝普通 Apply，也不强制新开会话。
 
 尚未确认纸张位置的 Lib 可用 `sch lib-layout` 计算局部几何，再用默认 compose 组合；框按各自内容压缩上下空档，
 按功能顺序排 Z 字行，同行顶齐，下一行按上一行最高框推进，不统一拉高。
@@ -110,8 +112,8 @@ diagnostic/blocked/partial 布局；先修复源数据、采集或算法，再�
 
 1. 对照目标 IR 与实际 connectivity：组件身份、pin→net、NC 必须一致。多页逐页读取，
    检查迁移后的页面归属和全工程位号；离线 diff 通过不能替代实际写入证明。
-2. 逐页 `sch gate --strict --doc <page>`，确认所有阶段完成且 verdict 为 `pass`。
-   `blocked` 先处理连接/页面；未执行的 DRC 等阶段必须补跑。
+2. 逐页保存 `layout-lint`、`sch check`、`bridge-check` 和 SDK DRC 结果；`sch gate` 可作为旧脚本
+   的聚合显示。`blocked` 表示检查未完成，未执行的项目明确列为待验证。
 3. `sch frame check` 核验矩形、标题、颜色、虚线及必检文字净距；另对实际数据检查
    核心/外围归属、直连保持、位号入框和遮挡。型号/参数等非位号属性不参与布局检查。
    `sch export-image` 仅辅助审阅；若发现漏检，先补原始数据采集、规则和回归再重算，

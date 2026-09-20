@@ -109,3 +109,37 @@ func TestProtectedPinRepairIsCataloguedAsMutatingGeometryAction(t *testing.T) {
 		t.Fatal("protected repair lacks CLI/daemon geometry timeout sizing")
 	}
 }
+
+func TestPcbOutlineAndOriginContracts(t *testing.T) {
+	byName := map[string]ActionSpec{}
+	for _, action := range AllActions() {
+		byName[action.Name] = action
+	}
+
+	outline, ok := byName["pcb.outline.set"]
+	if !ok || !outline.Mutates || outline.Domain != DomainPcb {
+		t.Fatalf("pcb.outline.set catalog contract missing: %+v", outline)
+	}
+	outlineText := strings.Join(append(append([]string{outline.Description}, outline.Inputs...), outline.Outputs...), " ")
+	for _, want := range []string{"ARC", "source", "lineWidth", "locked", "radius"} {
+		if !strings.Contains(outlineText, want) {
+			t.Errorf("pcb.outline.set contract missing %q: %s", want, outlineText)
+		}
+	}
+
+	for _, name := range []string{"pcb.origin.get", "pcb.origin.set"} {
+		action, ok := byName[name]
+		if !ok || action.Domain != DomainPcb || !action.NeedsWindow {
+			t.Fatalf("%s catalog contract missing: %+v", name, action)
+		}
+		if got, want := action.Mutates, name == "pcb.origin.set"; got != want {
+			t.Errorf("%s Mutates=%v, want %v (set persists metadata; get is read-only)", name, got, want)
+		}
+		text := strings.Join(append(append([]string{action.Description}, action.Inputs...), action.Outputs...), " ")
+		for _, want := range []string{"offsetX", "offsetY", "move"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s contract missing %q: %s", name, want, text)
+			}
+		}
+	}
+}

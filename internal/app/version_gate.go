@@ -5,11 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
-	"sync"
-	"testing"
-	"time"
 
 	"github.com/zhoushoujianwork/easyeda-agent/internal/selfupdate"
 	"github.com/zhoushoujianwork/easyeda-agent/internal/version"
@@ -19,7 +15,7 @@ import (
 //
 // 用户实测:CLI 已升级而 daemon 仍跑旧构建,行为不一致 —— 而且
 // 「明明修过的 bug 又复现」会把**后续每一条排查都染上噪音**,一轮排查白烧。
-// 所以这条不是提示级别的问题,是「先把地基对齐再谈别的」。
+// 这些差异会在 health/update 中明确报告,但不再作为 action 的许可条件。
 //
 // 三个版本各自的来源:
 //   - CLI       : internal/version.Version(ldflags 注入,`make dev-build` 每次重建刷新)
@@ -29,12 +25,12 @@ import (
 //
 // 判据分级(非对称,理由见 README 式说明):
 //
-//   daemon:任何差异(含 patch)→ **拒绝**。
+//   daemon:任何差异(含 patch)→ **高优先级诊断**。
 //     它跟 CLI 是同一份二进制、同一个版本号,发布时**必然相等**;不等只可能是
 //     「老进程没重启」这一种意外。修复代价近乎零(air 自己会重启 / 换个终端),
-//     漏判代价却是整轮排查的噪音 —— 所以宁可拦。
+//     漏判代价是整轮排查的噪音,因此需要显眼报告。
 //
-//   connector:major/minor 不一致 → **拒绝**;仅 patch 不一致 → **通过**。
+//   connector:major/minor 不一致 → **高优先级诊断**;仅 patch 不一致 → **兼容**。
 //     它走的是**另一条分发渠道**:插件市场没有发布 API,每次发版靠人工重投,
 //     所以「市场版落后 CLI 一点」是多数用户的**常态**(CLAUDE.md 明确记着这条)。
 //     修复代价也高得多 —— 卸载 → 重导入 → **完全退出重启 EasyEDA**,还可能丢
@@ -68,8 +64,9 @@ type versionFinding struct {
 	Fix       string `json:"fix,omitempty"`
 }
 
-// versionGateReport is the whole three-way verdict, also surfaced by
-// `easyeda health` as the "versionGate" block.
+// versionGateReport is the whole three-way diagnostic, also surfaced by
+// `easyeda health` as the legacy-compatible "versionGate" block. A "block"
+// verdict now means incompatible enough to deserve attention, not denied.
 type versionGateReport struct {
 	CLI        string           `json:"cli"`
 	Daemon     string           `json:"daemon,omitempty"`
@@ -103,8 +100,8 @@ func evaluateVersionGate(cli, daemon string, connectors []string) versionGateRep
 }
 
 // daemonFinding grades the CLI ↔ daemon pair: any clean-release difference
-// blocks (they ship as ONE version; a difference can only mean a stale
-// process), dev stamps never block.
+// is a high-priority diagnostic (they ship as ONE version; a difference can
+// only mean a stale process). Dev stamps remain informational.
 func daemonFinding(cli, daemon string) versionFinding {
 	f := versionFinding{Component: "daemon", Version: strings.TrimSpace(daemon)}
 	switch {
@@ -136,10 +133,9 @@ func daemonFinding(cli, daemon string) versionFinding {
 	return f
 }
 
-// connectorFinding grades the CLI ↔ connector pair: major/minor drift blocks
-// (the connector may simply not have the handler this CLI calls), while patch
-// drift is compatible by release policy (patches contain no connector runtime
-// changes and the marketplace channel structurally lags).
+// connectorFinding grades the CLI ↔ connector pair: major/minor drift is a
+// high-priority diagnostic (the connector may not have the requested handler),
+// while patch drift is compatible by release policy.
 func connectorFinding(cli, connector string) versionFinding {
 	f := versionFinding{Component: "connector", Version: strings.TrimSpace(connector)}
 	cliCore, connCore := selfupdate.SemverCore(cli), selfupdate.SemverCore(connector)
@@ -219,7 +215,8 @@ func worstSeverity(findings []versionFinding) string {
 	return worst
 }
 
-// blockingFindings returns only the findings that refuse the run.
+// blockingFindings returns findings historically labelled "block" in health
+// JSON. The label is retained for compatibility; dispatch ignores it.
 func (r versionGateReport) blockingFindings() []versionFinding {
 	var out []versionFinding
 	for _, f := range r.Findings {
@@ -230,7 +227,7 @@ func (r versionGateReport) blockingFindings() []versionFinding {
 	return out
 }
 
-// warningFindings returns only the findings that warn without refusing.
+// warningFindings returns lower-priority diagnostic findings.
 func (r versionGateReport) warningFindings() []versionFinding {
 	var out []versionFinding
 	for _, f := range r.Findings {
@@ -241,9 +238,7 @@ func (r versionGateReport) warningFindings() []versionFinding {
 	return out
 }
 
-// versionGateFromHealth builds the report straight from a /health body — the
-// SAME bytes postAction already fetched to find the daemon, so the gate costs
-// ZERO extra round-trips.
+// versionGateFromHealth builds the diagnostic straight from a /health body.
 func versionGateFromHealth(raw []byte) versionGateReport {
 	var parsed struct {
 		Version string `json:"version"`
@@ -263,68 +258,36 @@ func versionGateFromHealth(raw []byte) versionGateReport {
 
 // ── 拦截点:每进程一次,在第一条真正要走连接器的动作之前 ────────────────────
 //
-// 拦在 postAction(CLI 的唯一派发咽喉)上,而不是每条命令各查一次:
-//   - 它已经为了找 daemon 做过 /health 扫描,报文里三个版本齐全 → **零额外往返**;
-//   - 一个进程只判一次(sync.Once):复合命令(pcb check / report)一次跑几十个
-//     action,重复刷同一条告警就等于没有告警;
-//   - `easyeda health` / `version` / `update` / `daemon start` 都不经过 postAction,
-//     所以**诊断与修复路径永远不会被自己拦死** —— 这是选这个点最重要的理由。
+// Compatibility diagnostic helper. Ordinary action dispatch intentionally
+// does not call it.
 
-var (
-	versionGateOnce   sync.Once
-	versionGateCached error
-)
-
-// checkVersionGate refuses the dispatch when a blocking mismatch is present,
-// prints warnings once, and honours the audited escape hatch. Evaluated once
-// per process; later calls replay the cached decision.
+// checkVersionGate is retained for callers compiled against the old helper. It
+// only emits diagnostics and always allows the caller to continue. Normal action
+// dispatch no longer calls it; explicit `update --check --exit-code` remains the
+// install reconciliation command.
 func checkVersionGate(cfg *appConfig, healthRaw []byte, stderr io.Writer) error {
-	if selfupdate.IsLocalVersion(normVersion(version.Version)) {
-		// Re-check each fresh health snapshot: a reconnect must not inherit a pass.
-		rep := versionGateFromHealth(healthRaw)
-		if rep.Verdict != versionSevOK {
-			return fmt.Errorf("local runtime mismatch: %v", rep.Findings)
-		}
-		return nil
-	}
-	versionGateOnce.Do(func() {
-		versionGateCached = runVersionGate(cfg, healthRaw, stderr)
-	})
-	return versionGateCached
+	return runVersionGate(cfg, healthRaw, stderr)
 }
 
-// runVersionGate is the one-shot body of checkVersionGate (separated so tests
-// can drive it without the process-wide Once).
+// runVersionGate is separated so tests can exercise the rendered diagnostic.
 func runVersionGate(cfg *appConfig, healthRaw []byte, stderr io.Writer) error {
 	rep := versionGateFromHealth(healthRaw)
-	skip := versionCheckSkipped(cfg)
 
 	for _, f := range rep.warningFindings() {
 		fmt.Fprintf(stderr, "⚠ 版本错位(%s):%s\n%s\n", f.Component, f.Reason, indentFix(f.Fix))
 	}
 
 	blocking := rep.blockingFindings()
-	if len(blocking) == 0 {
-		return nil
-	}
-	if skip {
-		for _, f := range blocking {
-			fmt.Fprintf(stderr, "⚠ 版本错位(%s)已被 --skip-version-check 放行:%s\n", f.Component, f.Reason)
-		}
-		auditVersionCheckSkip(rep)
-		return nil
-	}
-	var b strings.Builder
-	b.WriteString("版本一致性门:拒绝执行 —— 工具链版本错位\n")
 	for _, f := range blocking {
-		fmt.Fprintf(&b, "\n  ✗ %s %s\n    %s\n%s\n", f.Component, display(f.Version), f.Reason, indentFix(f.Fix))
+		fmt.Fprintf(stderr, "⚠ 版本错位(%s):%s\n%s\n", f.Component, f.Reason, indentFix(f.Fix))
 	}
-	fmt.Fprintf(&b, "\n  当前:CLI %s | daemon %s", display(rep.CLI), display(rep.Daemon))
-	if len(rep.Connectors) > 0 {
-		fmt.Fprintf(&b, " | connector %s", strings.Join(rep.Connectors, ", "))
+	if len(blocking) > 0 {
+		fmt.Fprintln(stderr, "  该结果仅供诊断;普通 action 不再因版本差异被拒绝。需要显式安装对账时运行 `easyeda update --check --exit-code`。")
 	}
-	b.WriteString("\n  明知故犯:加 --skip-version-check(或 " + envSkipVersionCheck + "=1)强行继续 —— 会写一行审计。")
-	return fmt.Errorf("%s", b.String())
+	if versionCheckSkipped(cfg) {
+		fmt.Fprintln(stderr, "ℹ --skip-version-check 已无需:版本检查不再作为 action 许可门。")
+	}
+	return nil
 }
 
 // indentFix indents a multi-line fix block under its finding.
@@ -352,59 +315,13 @@ func versionCheckSkipped(cfg *appConfig) bool {
 	return true
 }
 
-// auditVersionCheckSkip records every bypass as its own JSONL row, mirroring
-// the daemon's `daemon.stale_read.force` discipline (stalereads.go): a guard
-// that can be silently bypassed is indistinguishable from a guard that never
-// fired. The pseudo-action name is never a real catalog action, so per-action
-// call/failure statistics stay intact while remaining greppable.
-//
-// Best-effort: an audit failure must never break the dispatch path.
-func auditVersionCheckSkip(rep versionGateReport) {
-	dir := os.Getenv("EASYEDA_AUDIT_DIR")
-	if dir == "" {
-		// Same rule as the daemon's writer: never append test fixtures to the
-		// user's real audit log.
-		if testing.Testing() {
-			return
-		}
-		dir = defaultAuditDir()
-	}
-	blocked := make([]string, 0, 2)
-	for _, f := range rep.blockingFindings() {
-		blocked = append(blocked, f.Component+" "+display(f.Version))
-	}
-	now := time.Now().UTC()
-	entry := map[string]any{
-		"ts":       now.Format(time.RFC3339Nano),
-		"clientId": cliClientID(),
-		"action":   "cli.version_check.skip",
-		"ok":       true,
-		"result": map[string]any{
-			"cli":        rep.CLI,
-			"daemon":     rep.Daemon,
-			"connectors": rep.Connectors,
-			"blocked":    blocked,
-		},
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
-	}
-	f, err := os.OpenFile(filepath.Join(dir, now.Format("2006-01-02")+".jsonl"),
-		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	_ = json.NewEncoder(f).Encode(entry)
-}
-
 // versionGateSummary renders the one-line human verdict `easyeda health`
 // prints alongside its JSON, so the same judgement is readable without
 // re-deriving it from the report.
 func versionGateSummary(rep versionGateReport) string {
 	switch rep.Verdict {
 	case versionSevBlock:
-		return "✗ 版本一致性:错位,动作会被拒 —— 见 versionGate.findings[].fix"
+		return "⚠ 版本一致性:存在不兼容差异(仅诊断,不阻塞 action) —— 见 versionGate.findings[].fix"
 	case versionSevWarn:
 		return "⚠ 版本一致性:有落后组件(不拦)—— 见 versionGate.findings[].fix"
 	case versionSevOK:

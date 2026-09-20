@@ -13,7 +13,7 @@ func refComp(des string, x, y float64, locked bool, dev string) boardComp {
 	}
 }
 
-func TestBuildImmovableSet_LockedAndConfirmedTiers(t *testing.T) {
+func TestBuildImmovableSet_UsesOnlyLiveLocks(t *testing.T) {
 	snap := &boardSnapshot{Components: []boardComp{
 		refComp("C1", 100.5, 200.3, false, "CAP0402"),
 		refComp("U1", 500, 500, true, "ESP32"), // 编辑器里锁了
@@ -21,24 +21,16 @@ func TestBuildImmovableSet_LockedAndConfirmedTiers(t *testing.T) {
 		refComp("J1", 900, 100, false, "USB3.1TYPE-C16P"),
 		refComp("R1", 300, 300, false, "RES0402"),
 	}}
-	tiers := map[int][]string{
-		1: {"H1"},       // 孔
-		2: {"J1"},       // 边缘接口件，朝向经用户确认
-		3: {"U1"},       // 主芯片
-		4: {"C1", "R1"}, // 卫星
-	}
-	set, list := buildImmovableSet(snap, tiers, false)
+	set, list := buildImmovableSet(snap, false)
 
-	// 锁定件 + tier1 + tier2 必须进不可动集合
-	for _, want := range []string{"U1", "H1", "J1"} {
-		if _, ok := set[want]; !ok {
-			t.Errorf("%s must be immovable (locked / tier-1 / tier-2)", want)
-		}
+	if _, ok := set["U1"]; !ok {
+		t.Error("U1 must be immovable because it is locked in the live editor")
 	}
-	// tier 3/4 是几何摆放的结果，精修动它们是本分 —— 不该被保护
-	for _, moveable := range []string{"C1", "R1"} {
+	// Historical tier membership is absent from execution semantics. Unlocked
+	// mechanical and edge parts remain movable until the board itself locks them.
+	for _, moveable := range []string{"H1", "J1", "C1", "R1"} {
 		if why, blocked := set[moveable]; blocked {
-			t.Errorf("%s is a tier-3/4 part and should stay refinable, got blocked: %s", moveable, why)
+			t.Errorf("%s is unlocked and should stay refinable, got blocked: %s", moveable, why)
 		}
 	}
 	// 原因必须人读得懂：报告要靠它解释"为什么这件没动"
@@ -47,14 +39,14 @@ func TestBuildImmovableSet_LockedAndConfirmedTiers(t *testing.T) {
 			t.Errorf("%s blocked without a reason", e.Designator)
 		}
 	}
-	if len(list) != 3 {
-		t.Errorf("immovable list = %d, want 3", len(list))
+	if len(list) != 1 {
+		t.Errorf("immovable list = %d, want 1", len(list))
 	}
 }
 
 func TestBuildImmovableSet_IncludeLockedOptOut(t *testing.T) {
 	snap := &boardSnapshot{Components: []boardComp{refComp("U1", 0, 0, true, "IC")}}
-	set, _ := buildImmovableSet(snap, nil, true)
+	set, _ := buildImmovableSet(snap, true)
 	if _, blocked := set["U1"]; blocked {
 		t.Error("--include-locked must let locked parts through")
 	}
@@ -101,7 +93,7 @@ func TestBudgetMoves_RefusesUnrollbackable(t *testing.T) {
 }
 
 func TestBudgetMoves_DropsFloatNoise(t *testing.T) {
-	// 亚 0.01mil 的移动发出去只会白白触发 InvalidatesStage 和 autosave
+	// 亚 0.01mil 的移动发出去只会白白触发 autosave
 	// （auto-place 不幂等的老毛病就是这么来的）。
 	moves := []refineMove{{ID: "a", Designator: "C1", FromX: 100, FromY: 100, ToX: 100.001, ToY: 100, HasOriginal: true}}
 	kept, _ := budgetMoves(moves, nil, 5)

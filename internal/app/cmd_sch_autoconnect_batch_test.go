@@ -96,9 +96,10 @@ func newFakeBatchDaemon(t *testing.T) (*appConfig, func()) {
 // that ignored its batch siblings, so U1:1's GND stub (down, ending at y=45)
 // and U2:1's VCC stub (kind default up, ending at y=50) collinear-overlapped
 // on x=10 — EasyEDA would merge them into one net (a silent GND/VCC short).
-// Post-fix, the first planned stub is registered as a scene wire, so the
-// second connection's "up" candidates are hard-rejected as foreign-wire
-// touches and the planner steers to a clean direction.
+// Post-fix, the first planned stub is registered as a scene wire. Because U2's
+// only geometrically valid first segment is "up", the planner must reject U2
+// instead of inventing a perpendicular/back-side exit that the connector's
+// geometry guard will refuse.
 func TestAutoconnect_BatchStubsAreMutuallyExclusive(t *testing.T) {
 	cfg, cleanup := newFakeBatchDaemon(t)
 	defer cleanup()
@@ -109,8 +110,8 @@ func TestAutoconnect_BatchStubsAreMutuallyExclusive(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runAutoconnect(cfg, "", conns, defaultAutoconnectRules(), false, false, false, true, &out, &out); err != nil {
-		t.Fatalf("run failed: %v\n%s", err, out.String())
+	if err := runAutoconnect(cfg, "", conns, defaultAutoconnectRules(), false, false, false, true, &out, &out); err == nil {
+		t.Fatalf("第二只 pin 的唯一朝外通道已被异网桩占用，应拒绝而不是改走错误方向:\n%s", out.String())
 	}
 
 	var report acReport
@@ -122,7 +123,7 @@ func TestAutoconnect_BatchStubsAreMutuallyExclusive(t *testing.T) {
 	}
 	first, second := report.Connections[0], report.Connections[1]
 	if first.Selected == nil || second.Selected == nil {
-		t.Fatalf("both connections must select a candidate: %+v / %+v", first, second)
+		t.Fatalf("报告必须保留已执行候选和被拒候选: %+v / %+v", first, second)
 	}
 
 	// Sanity: the first connection takes SOME unobstructed direction. 具体是哪一个
@@ -134,8 +135,10 @@ func TestAutoconnect_BatchStubsAreMutuallyExclusive(t *testing.T) {
 	if first.Selected.Direction == "" {
 		t.Fatalf("U1:1 GND must select some direction: %+v", first.Selected)
 	}
-	// 不再断言"第二条不许选 up":那是基于「第一条一定选 down」推出来的间接判据,
-	// 第一条改选别的方向后就不成立了。真正的不变量在下面 —— **两条桩线不许相碰**。
+	if second.Error == "" || !candidateHardRejected(*second.Selected) {
+		t.Fatalf("U2 必须以 no-safe-candidate 留在未写入状态: %+v", second)
+	}
+	// 即使报告保留了最小代价的被拒候选，实际已写入的第一条也不能与它相交。
 	if segmentsTouch(
 		first.PinX, first.PinY, first.Selected.EndPoint.X, first.Selected.EndPoint.Y,
 		second.PinX, second.PinY, second.Selected.EndPoint.X, second.Selected.EndPoint.Y,

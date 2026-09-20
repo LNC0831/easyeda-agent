@@ -58,14 +58,14 @@
 ## 0. 环境（一次性）
 
 三样东西缺一不可：**CLI/daemon**、**EasyEDA 里的连接器插件**、**外部交互权限**。
-安装与版本门禁见 [Skill 入口](skills/easyeda-agent/SKILL.md) 和
+安装与版本对账见 [Skill 入口](skills/easyeda-agent/SKILL.md) 和
 [environment-setup.md](skills/easyeda-agent/references/environment-setup.md)，不依赖旧章节编号。
 
 只强调最容易翻车的一条：**sideload 的 `.eext` 同 uuid 更新必须先卸载旧的**，
 且导入后要**完全退出重启 EasyEDA**——否则已开窗口还在跑旧代码并抢 daemon 的 socket。
 
 ```bash
-easyeda health        # 在 Skill 版本门禁通过后检查连接；有窗口不等于版本/现场验收通过
+easyeda health        # 检查连接与实际运行版本；有窗口不等于现场数据已验证
 ```
 
 看到 `windows: []` 就是连接器没附上，回头查权限和重启，**别往下跑**。

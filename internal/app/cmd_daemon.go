@@ -166,9 +166,8 @@ func newDaemonHealthCmd(cfg *appConfig, stdout, stderr io.Writer) *cobra.Command
 				portStart: portStart,
 				portEnd:   portEnd,
 			})
-			// Attach the version-consistency verdict — the same judgement that
-			// refuses a mismatched dispatch (version_gate.go), so `health` is
-			// where you SEE it instead of first tripping over it mid-flow.
+			// Attach the version-consistency diagnostic. Ordinary action dispatch
+			// continues; explicit installation reconciliation uses update --check.
 			if result.Found != nil {
 				rep := versionGateFromHealth(result.Found.Raw)
 				result.VersionGate = &rep

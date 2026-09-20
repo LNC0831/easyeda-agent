@@ -121,8 +121,8 @@ func TestUpdateNotesSurfaceConnectorAndDaemonRestart(t *testing.T) {
 	if !strings.Contains(notes, ".eext") {
 		t.Errorf("a stale connector note must point at the .eext re-import: %q", notes)
 	}
-	if !strings.Contains(notes, "new session") {
-		t.Errorf("an updated Skill must force a new agent session: %q", notes)
+	if strings.Contains(notes, "new session") || strings.Contains(notes, "stop this task") {
+		t.Errorf("an update must not act as a session authorization gate: %q", notes)
 	}
 }
 

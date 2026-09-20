@@ -1,0 +1,424 @@
+/// <reference types="@jlceda/pro-api-types" />
+
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { runAction } from './actions';
+
+function withEda(mock: Record<string, unknown>, run: () => Promise<void>): Promise<void> {
+	(globalThis as any).eda = mock;
+	return run().finally(() => { delete (globalThis as any).eda; });
+}
+
+function footprintDocumentControl(uuid: string, libraryUuid: string, tabId: string): Record<string, unknown> {
+	let current = { uuid: 'previous', parentLibraryUuid: 'previous-library', documentType: 0, tabId: 'previous-tab' };
+	return {
+		dmt_SelectControl: { getCurrentDocumentInfo: async () => current },
+		dmt_EditorControl: {
+			getSplitScreenIdByTabId: async () => 'split-1',
+			openLibraryDocument: async () => {
+				current = { uuid, parentLibraryUuid: libraryUuid, documentType: 4, tabId };
+				return tabId;
+			},
+			activateDocument: async () => true,
+		},
+	};
+}
+
+test('project.create forwards official fields and reports a created-but-not-opened partial outcome', async () => {
+	const calls: unknown[][] = [];
+	await withEda({
+		dmt_Project: {
+			createProject: async (...args: unknown[]) => { calls.push(args); return 'project-1'; },
+			openProject: async () => { throw new Error('open failed'); },
+			getCurrentProjectInfo: async () => undefined,
+		},
+	}, async () => {
+		const res: any = await runAction('project.create', {
+			friendlyName: 'AT32F415 demo', projectName: 'at32-demo', teamUuid: 'team-1',
+			folderUuid: 'folder-1', description: 'exam', open: true,
+		});
+		assert.deepEqual(calls, [['AT32F415 demo', 'at32-demo', 'team-1', 'folder-1', 'exam']]);
+		assert.deepEqual(res.result, {
+			partial: true,
+			uuid: 'project-1', friendlyName: 'AT32F415 demo', projectName: 'at32-demo',
+			created: true, opened: false,
+		});
+		assert.match(res.warnings[0], /created.*opening.*failed/i);
+	});
+});
+
+test('project.create reports openProject=false as a created partial outcome', async () => {
+	await withEda({
+		dmt_Project: {
+			createProject: async () => 'project-2',
+			openProject: async () => false,
+		},
+	}, async () => {
+		const res: any = await runAction('project.create', { friendlyName: 'demo', open: true });
+		assert.equal(res.result.created, true);
+		assert.equal(res.result.opened, false);
+		assert.equal(res.result.partial, true);
+		assert.match(res.warnings[0], /returned false/i);
+	});
+});
+
+test('pcb.net_class.create validates live nets, creates once, and verifies membership', async () => {
+	let classes: any[] = [];
+	let createCalls = 0;
+	await withEda({
+		pcb_Net: { getAllNetsName: async () => ['+5V', '+3V3', 'GND'] },
+		pcb_Drc: {
+			getAllNetClasses: async () => classes,
+			getNetRules: async () => [],
+			createNetClass: async (name: string, nets: string[], color: unknown) => {
+				createCalls++;
+				classes = [{ name, nets, color }];
+				return true;
+			},
+		},
+	}, async () => {
+		const payload = { name: 'PWR_Class', nets: ['+5V', '+3V3', 'GND'] };
+		const first: any = await runAction('pcb.net_class.create', payload);
+		assert.equal(first.result.created, true);
+		assert.equal(first.result.verified, true);
+		const second: any = await runAction('pcb.net_class.create', payload);
+		assert.equal(second.result.alreadyExists, true);
+		assert.equal(createCalls, 1);
+	});
+});
+
+test('pcb.drc.rules.set supports dry-run and exact write/readback', async () => {
+	let current: Record<string, unknown> = { old: true };
+	let netRules: Array<Record<string, unknown>> = [{ old: true }];
+	await withEda({
+		pcb_Drc: {
+			getCurrentRuleConfiguration: async () => current,
+			getNetRules: async () => netRules,
+			overwriteCurrentRuleConfiguration: async (next: Record<string, unknown>) => { current = next; return true; },
+			overwriteNetRules: async (next: Array<Record<string, unknown>>) => { netRules = next; return true; },
+		},
+	}, async () => {
+		const requested = { ruleConfiguration: { clearance: 6 }, netRules: [{ class: 'PWR_Class', rule: 'PWR' }] };
+		const preview: any = await runAction('pcb.drc.rules.set', { ...requested, dryRun: true });
+		assert.equal(preview.result.dryRun, true);
+		assert.deepEqual(current, { old: true });
+		const applied: any = await runAction('pcb.drc.rules.set', requested);
+		assert.equal(applied.result.verified, true);
+		assert.deepEqual(applied.result.actual, requested);
+	});
+});
+
+test('pcb.drc.rules.set unwraps the live {name, config} read shape and writes only bare config', async () => {
+	let currentConfig: Record<string, unknown> = { old: true };
+	let written: Record<string, unknown> | null = null;
+	await withEda({
+		pcb_Drc: {
+			getCurrentRuleConfiguration: async () => ({
+				name: written ? '自定义配置' : 'JLCPCB Capability(Two Layers Board)',
+				config: currentConfig,
+			}),
+			overwriteCurrentRuleConfiguration: async (next: Record<string, unknown>) => {
+				written = next;
+				currentConfig = next;
+				return true;
+			},
+		},
+	}, async () => {
+		const requested = { ruleConfiguration: { clearance: 6 } };
+		const preview: any = await runAction('pcb.drc.rules.set', { ...requested, dryRun: true });
+		assert.deepEqual(preview.result.before.ruleConfiguration, { old: true });
+		const applied: any = await runAction('pcb.drc.rules.set', requested);
+		assert.equal(applied.result.verified, true);
+		assert.deepEqual(written, { clearance: 6 });
+		assert.deepEqual(applied.result.actual.ruleConfiguration, { clearance: 6 });
+	});
+});
+
+test('pcb.drc.rules.set accepts the exported {name, config} wrapper as input', async () => {
+	let currentConfig: Record<string, unknown> = { old: true };
+	let written: Record<string, unknown> | null = null;
+	await withEda({
+		pcb_Drc: {
+			getCurrentRuleConfiguration: async () => ({ name: '当前配置', config: currentConfig }),
+			overwriteCurrentRuleConfiguration: async (next: Record<string, unknown>) => {
+				written = next;
+				currentConfig = next;
+				return true;
+			},
+		},
+	}, async () => {
+		const exported = { name: '自定义配置', config: { clearance: 6 } };
+		const preview: any = await runAction('pcb.drc.rules.set', {
+			ruleConfiguration: exported, dryRun: true,
+		});
+		assert.deepEqual(preview.result.requested.ruleConfiguration, { clearance: 6 });
+		const applied: any = await runAction('pcb.drc.rules.set', { ruleConfiguration: exported });
+		assert.equal(applied.result.verified, true);
+		assert.deepEqual(written, { clearance: 6 });
+		assert.deepEqual(applied.result.actual.ruleConfiguration, { clearance: 6 });
+	});
+});
+
+test('pcb.drc.rules.set dry-run omits netRules when no net-rule write was requested', async () => {
+	await withEda({
+		pcb_Drc: {
+			getCurrentRuleConfiguration: async () => ({ old: true }),
+			getNetRules: async () => { throw new Error('must not read net rules'); },
+		},
+	}, async () => {
+		const preview: any = await runAction('pcb.drc.rules.set', {
+			ruleConfiguration: { clearance: 6 }, dryRun: true,
+		});
+		assert.equal(Object.hasOwn(preview.result.before, 'netRules'), false);
+		assert.equal(Object.hasOwn(preview.result.requested, 'netRules'), false);
+	});
+});
+
+test('pcb.drc.rules.set stops after a false first write and reports actual state', async () => {
+	let netWriteCalls = 0;
+	await withEda({
+		pcb_Drc: {
+			getCurrentRuleConfiguration: async () => ({ old: true }),
+			getNetRules: async () => [{ old: true }],
+			overwriteCurrentRuleConfiguration: async () => false,
+			overwriteNetRules: async () => { netWriteCalls++; return true; },
+		},
+	}, async () => {
+		const res: any = await runAction('pcb.drc.rules.set', {
+			ruleConfiguration: { clearance: 6 }, netRules: [{ class: 'PWR' }],
+		});
+		assert.equal(res.result.verified, false);
+		assert.equal(res.result.writeFailed, true);
+		assert.equal(res.result.partial, false);
+		assert.equal(netWriteCalls, 0);
+		assert.deepEqual(res.result.actual, { ruleConfiguration: { old: true }, netRules: [{ old: true }] });
+	});
+});
+
+test('pcb.drc.rules.set rolls back an uncertain first-stage throw before returning', async () => {
+	const beforeRules = { old: true };
+	const beforeNetRules = [{ old: true }];
+	let currentRules: Record<string, unknown> = beforeRules;
+	let currentNetRules: Array<Record<string, unknown>> = beforeNetRules;
+	let ruleWriteCalls = 0;
+	let netWriteCalls = 0;
+	await withEda({
+		pcb_Drc: {
+			getCurrentRuleConfiguration: async () => currentRules,
+			getNetRules: async () => currentNetRules,
+			overwriteCurrentRuleConfiguration: async (next: Record<string, unknown>) => {
+				ruleWriteCalls++;
+				currentRules = next;
+				if (ruleWriteCalls === 1) throw new Error('uncertain first write');
+				return true;
+			},
+			overwriteNetRules: async (next: Array<Record<string, unknown>>) => {
+				netWriteCalls++;
+				currentNetRules = next;
+				return true;
+			},
+		},
+	}, async () => {
+		const res: any = await runAction('pcb.drc.rules.set', {
+			ruleConfiguration: { clearance: 6 }, netRules: [{ class: 'PWR' }],
+		});
+		assert.equal(res.result.partial, true);
+		assert.equal(res.result.rulesWritten, null);
+		assert.equal(res.result.rollbackAttempted, true);
+		assert.equal(res.result.rolledBack, true);
+		assert.equal(netWriteCalls, 1, 'only the rollback net-rule write runs');
+		assert.deepEqual(currentRules, beforeRules);
+		assert.deepEqual(currentNetRules, beforeNetRules);
+	});
+});
+
+test('pcb.drc.rules.set rolls both stages back when the second write throws', async () => {
+	const beforeRules = { old: true };
+	const beforeNetRules = [{ old: true }];
+	let currentRules: Record<string, unknown> = beforeRules;
+	let currentNetRules: Array<Record<string, unknown>> = beforeNetRules;
+	let netWriteCalls = 0;
+	await withEda({
+		pcb_Drc: {
+			getCurrentRuleConfiguration: async () => currentRules,
+			getNetRules: async () => currentNetRules,
+			overwriteCurrentRuleConfiguration: async (next: Record<string, unknown>) => { currentRules = next; return true; },
+			overwriteNetRules: async (next: Array<Record<string, unknown>>) => {
+				netWriteCalls++;
+				if (netWriteCalls === 1) throw new Error('net write failed');
+				currentNetRules = next;
+				return true;
+			},
+		},
+	}, async () => {
+		const res: any = await runAction('pcb.drc.rules.set', {
+			ruleConfiguration: { clearance: 6 }, netRules: [{ class: 'PWR' }],
+		});
+		assert.equal(res.result.partial, true);
+		assert.equal(res.result.rulesWritten, true);
+		assert.equal(res.result.netRulesWritten, null);
+		assert.equal(res.result.rollbackAttempted, true);
+		assert.equal(res.result.rolledBack, true);
+		assert.deepEqual(currentRules, beforeRules);
+		assert.deepEqual(currentNetRules, beforeNetRules);
+	});
+});
+
+test('pcb.drc.rules.set returns an unverified partial result when final readback throws', async () => {
+	let reads = 0;
+	await withEda({
+		pcb_Drc: {
+			getCurrentRuleConfiguration: async () => {
+				reads++;
+				if (reads > 1) throw new Error('readback unavailable');
+				return { old: true };
+			},
+			overwriteCurrentRuleConfiguration: async () => true,
+		},
+	}, async () => {
+		const res: any = await runAction('pcb.drc.rules.set', { ruleConfiguration: { clearance: 6 } });
+		assert.equal(res.result.partial, true);
+		assert.equal(res.result.verified, false);
+		assert.match(res.result.readbackError, /unavailable/i);
+	});
+});
+
+test('pcb.silk.add loads a requested font and returns the actual family', async () => {
+	let added = '';
+	let createArgs: unknown[] = [];
+	await withEda({
+		sys_FontManager: {
+			getFontsList: async () => ['default'],
+			addFont: async (font: string) => { added = font; return true; },
+		},
+		pcb_PrimitiveString: {
+			create: async (...args: unknown[]) => {
+				createArgs = args;
+				return { getState_PrimitiveId: () => 'silk-1', getState_FontFamily: () => 'Arial' };
+			},
+		},
+		pcb_Primitive: { getPrimitivesBBox: async () => ({ minX: 0, minY: 0, maxX: 20, maxY: 10 }) },
+	}, async () => {
+		const res: any = await runAction('pcb.silk.add', { text: 'CAN', x: 10, y: 20, fontFamily: 'Arial' });
+		assert.equal(added, 'Arial');
+		assert.equal(createArgs[4], 'Arial');
+		assert.equal(res.result.fontFamily, 'Arial');
+	});
+});
+
+test('pcb.silk.set requires a modify result, a readable primitive, and matching font readback', async () => {
+	await withEda({
+		sys_FontManager: { getFontsList: async () => ['Arial'], addFont: async () => true },
+		pcb_PrimitiveAttribute: { getAll: async () => [] },
+		pcb_PrimitiveString: {
+			modify: async (id: string) => id === 'no-result' ? undefined : { id },
+			get: async (id: string) => {
+				if (id === 'missing') return undefined;
+				const font = id === 'wrong-font' ? 'default' : 'Arial';
+				return { getState_FontFamily: () => font, getState_X: () => 10, getState_Y: () => 20 };
+			},
+		},
+	}, async () => {
+		const res: any = await runAction('pcb.silk.set', {
+			primitiveIds: ['no-result', 'missing', 'wrong-font', 'ok'], fontFamily: 'Arial',
+		});
+		assert.deepEqual(res.result.results.map((item: any) => item.ok), [false, false, false, true]);
+		assert.match(res.result.results[0].error, /modify returned no primitive/i);
+		assert.match(res.result.results[1].error, /not found by readback/i);
+		assert.match(res.result.results[2].error, /readback differs/i);
+		assert.equal(res.result.results[3].actual.fontFamily, 'Arial');
+	});
+});
+
+test('library.footprint.region_create saves and verifies a no-components region', async () => {
+	let saveCalls = 0;
+	let createArgs: unknown[] = [];
+	const source: Array<string | number> = [0, 0, 'L', 1200, 0, 1200, 900, 0, 900, 0, 0];
+	const region = {
+		getState_PrimitiveId: () => 'region-1', getState_Layer: () => 12,
+		getState_RuleType: () => [2], getState_RegionName: () => 'LCD_BODY',
+		getState_LineWidth: () => 6, getState_PrimitiveLock: () => true,
+		getState_ComplexPolygon: () => ({ getSource: () => source }),
+	};
+	await withEda({
+		...footprintDocumentControl('fp-copy', 'lib-1', 'tab-1'),
+		pcb_MathPolygon: { createPolygon: () => ({ getSource: () => source }) },
+		pcb_PrimitiveRegion: {
+			create: async (...args: unknown[]) => { createArgs = args; return region; },
+			get: async () => region,
+			delete: async () => true,
+		},
+		pcb_Document: { save: async () => { saveCalls++; return true; } },
+	}, async () => {
+		const res: any = await runAction('library.footprint.region_create', {
+			uuid: 'fp-copy', libraryUuid: 'lib-1',
+			points: [[0, 0], [1200, 0], [1200, 900], [0, 900]],
+			ruleType: '2', name: 'LCD_BODY', lineWidth: 6, locked: true,
+		});
+		assert.equal(saveCalls, 1);
+		assert.deepEqual(createArgs[2], [2]);
+		assert.equal(createArgs[3], 'LCD_BODY');
+		assert.equal(createArgs[5], true);
+		assert.equal(res.result.verified, true);
+		assert.deepEqual(res.result.actual.source, source);
+	});
+});
+
+test('library.footprint.region_create rolls back and re-saves when initial save returns false', async () => {
+	const source: Array<string | number> = [0, 0, 'L', 10, 0, 10, 10, 0, 10, 0, 0];
+	let present = true;
+	let saves = 0;
+	const region = { getState_PrimitiveId: () => 'region-2' };
+	await withEda({
+		...footprintDocumentControl('fp-copy', 'lib-1', 'tab-2'),
+		pcb_MathPolygon: { createPolygon: () => ({ getSource: () => source }) },
+		pcb_PrimitiveRegion: {
+			create: async () => region,
+			delete: async () => { present = false; return true; },
+			get: async () => present ? region : undefined,
+		},
+		pcb_Document: { save: async () => { saves++; return saves > 1; } },
+	}, async () => {
+		const res: any = await runAction('library.footprint.region_create', {
+			uuid: 'fp-copy', libraryUuid: 'lib-1', points: [[0, 0], [10, 0], [10, 10], [0, 10]],
+		});
+		assert.equal(res.result.partial, true);
+		assert.equal(res.result.deleteRolledBack, true);
+		assert.equal(res.result.saveRolledBack, true);
+		assert.equal(res.result.absentAfterRollback, true);
+		assert.equal(res.result.rolledBack, true);
+		assert.equal(saves, 2);
+	});
+});
+
+test('library.footprint.region_create rolls back a geometrically mismatched readback', async () => {
+	const requestedSource: Array<string | number> = [0, 0, 'L', 10, 0, 10, 10, 0, 10, 0, 0];
+	const wrongSource: Array<string | number> = [0, 0, 'L', 20, 0, 20, 10, 0, 10, 0, 0];
+	let present = true;
+	let saves = 0;
+	const region = {
+		getState_PrimitiveId: () => 'region-3', getState_Layer: () => 12,
+		getState_RuleType: () => [2], getState_RegionName: () => undefined,
+		getState_LineWidth: () => 6, getState_PrimitiveLock: () => true,
+		getState_ComplexPolygon: () => ({ getSource: () => wrongSource }),
+	};
+	await withEda({
+		...footprintDocumentControl('fp-copy', 'lib-1', 'tab-3'),
+		pcb_MathPolygon: { createPolygon: () => ({ getSource: () => requestedSource }) },
+		pcb_PrimitiveRegion: {
+			create: async () => region,
+			delete: async () => { present = false; return true; },
+			get: async () => present ? region : undefined,
+		},
+		pcb_Document: { save: async () => { saves++; return true; } },
+	}, async () => {
+		const res: any = await runAction('library.footprint.region_create', {
+			uuid: 'fp-copy', libraryUuid: 'lib-1', points: [[0, 0], [10, 0], [10, 10], [0, 10]],
+		});
+		assert.equal(res.result.verified, false);
+		assert.equal(res.result.rolledBack, true);
+		assert.deepEqual(res.result.actual.source, wrongSource);
+		assert.match(res.result.error, /source/i);
+		assert.equal(saves, 2);
+	});
+});

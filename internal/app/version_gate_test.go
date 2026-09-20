@@ -3,8 +3,13 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -229,18 +234,43 @@ func withCLIVersion(t *testing.T, v string) {
 	t.Cleanup(func() { version.Version = prev })
 }
 
-func TestRunVersionGateRefusesStaleDaemon(t *testing.T) {
+func TestRunVersionGateReportsStaleDaemonWithoutRefusing(t *testing.T) {
 	withCLIVersion(t, "v1.1.1")
 	var stderr bytes.Buffer
 	err := runVersionGate(&appConfig{}, healthBody("1.1.0", "1.1.1"), &stderr)
-	if err == nil {
-		t.Fatal("stale daemon must be refused")
+	if err != nil {
+		t.Fatalf("version mismatch is diagnostic-only: %v", err)
 	}
-	msg := err.Error()
-	for _, want := range []string{"拒绝执行", "daemon", "make dev", "easyeda daemon start", "--skip-version-check"} {
+	msg := stderr.String()
+	for _, want := range []string{"daemon", "make dev", "easyeda daemon start", "仅供诊断", "update --check --exit-code"} {
 		if !strings.Contains(msg, want) {
-			t.Fatalf("refusal message missing %q:\n%s", want, msg)
+			t.Fatalf("diagnostic missing %q:\n%s", want, msg)
 		}
+	}
+}
+
+func TestPostActionDoesNotConsultVersionDiagnostic(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/health" {
+			fmt.Fprint(w, `{"service":"easyeda-agent","version":"v0.1.0","windows":[{"windowId":"w1","connectorVersion":"0.1.0"}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"ok":true,"result":{}}`)
+	}))
+	t.Cleanup(srv.Close)
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	withCLIVersion(t, "v9.9.9")
+	cfg := &appConfig{host: u.Hostname(), ports: fmt.Sprintf("%d-%d", port, port)}
+	if _, err := postAction(cfg, "project.current", "w1", nil, defaultActionTimeout); err != nil {
+		t.Fatalf("ordinary action must proceed across a runtime version mismatch: %v", err)
 	}
 }
 
@@ -274,29 +304,22 @@ func TestRunVersionGateDevBuildNeverBlocks(t *testing.T) {
 	}
 }
 
-func TestRunVersionGateEscapeHatchIsAudited(t *testing.T) {
+func TestRunVersionGateEscapeHatchIsDeprecatedAndDoesNotAudit(t *testing.T) {
 	withCLIVersion(t, "v1.1.1")
 	dir := t.TempDir()
 	t.Setenv("EASYEDA_AUDIT_DIR", dir)
 
 	var stderr bytes.Buffer
 	if err := runVersionGate(&appConfig{skipVersionCheck: true}, healthBody("1.1.0", "1.1.1"), &stderr); err != nil {
-		t.Fatalf("--skip-version-check must let the run proceed: %v", err)
+		t.Fatalf("diagnostic must not block: %v", err)
 	}
-	if !strings.Contains(stderr.String(), "--skip-version-check") {
-		t.Fatalf("a bypass must still be loud on stderr, got:\n%s", stderr.String())
+	if !strings.Contains(stderr.String(), "--skip-version-check 已无需") {
+		t.Fatalf("deprecated option should explain its no-op status, got:\n%s", stderr.String())
 	}
 
 	rows := readVersionGateAuditRows(t, dir)
-	if len(rows) != 1 {
-		t.Fatalf("want exactly 1 audit row, got %d", len(rows))
-	}
-	if rows[0]["action"] != "cli.version_check.skip" {
-		t.Fatalf("audit action = %v, want cli.version_check.skip", rows[0]["action"])
-	}
-	res, _ := rows[0]["result"].(map[string]any)
-	if res == nil || res["daemon"] != "1.1.0" {
-		t.Fatalf("audit row must record the mismatch, got %v", rows[0])
+	if len(rows) != 0 {
+		t.Fatalf("there is no version authorization bypass to audit, got %v", rows)
 	}
 }
 

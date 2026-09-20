@@ -4,12 +4,11 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/zhoushoujianwork/easyeda-agent/internal/protocol"
 )
 
-// Daemon-level stale-read GATE (SKILL iron rule 5 made mechanical).
+// Daemon-level stale-read advisory.
 //
 // After a PCB mutation (rip-up / route / delete / via / track / pour edits) the
 // per-document engine state serves STALE data to list/DRC reads until the
@@ -18,21 +17,11 @@ import (
 // helped along by a non-blocking `staleRisk` advisory this guard attached to the
 // response.
 //
-// ── Why the advisory became a REFUSAL ─────────────────────────────────────
-//
-// A 49-day audit review (171554 action records under ~/.easyeda-agent/audit)
-// measured how often each iron rule is actually obeyed, and rule 5 was the only
-// one bleeding: **1780 stale PCB reads, an 18.1% violation rate**. Every one of
-// those reads got the advisory on stderr and read on anyway. The rules that
-// never leak (the 14-stage gate, the page/zone gate) are the ones a machine
-// REFUSES, not the ones the prose asks nicely for — so this guard now refuses
-// too. The advisory is still attached (see observe), but a bare stale read no
-// longer returns data: it returns a `STALE_READ` error naming the mutation that
-// dirtied the window and the exact command that fixes it.
-//
-// The refusal lives at the dispatch choke point (checkStaleRead, called from
-// handleAction next to the stage gate), so a raw /action caller can't slip past
-// the CLI. `forceReason` is the audited escape hatch.
+// A stale result must remain visible, but it is not an authorization problem.
+// Reads therefore continue and carry staleRisk. Example-driven batch workflows
+// finish with save -> real reload -> readback when the result must be
+// authoritative; if that refresh fails they report the data as unavailable.
+// This keeps the evidence without making an agent unlock a workflow state.
 //
 // State machine (per windowId, in-memory):
 //   SET    — a PCB-domain action with Mutates=true succeeds (catalog-driven,
@@ -44,9 +33,8 @@ import (
 //            state; a mere `doc switch`/document.open does NOT and must not
 //            clear). pcb.pour.rebuild also clears — it recomputes the pour
 //            connectivity that goes stale (pour-mediated Connection Errors).
-//   BLOCK  — a PCB-domain read (Mutates=false) arrives while the flag is set:
-//            refused with STALE_READ unless it carries a forceReason, or is in
-//            the narrow staleBlockExemptReads set (still advisory-only).
+//   WARN   — a PCB-domain read (Mutates=false) arrives while the flag is set:
+//            the response is returned with staleRisk populated.
 //
 // Exemptions (never SET the flag) — the first three are scar tissue, do not
 // remove them:
@@ -88,26 +76,14 @@ var staleViewOnlyActions = map[string]bool{
 	"pcb.view.side":          true,
 	"pcb.layers.set_current": true,
 	"pcb.layers.visibility":  true,
+	"pcb.origin.set":         true,
 }
 
-// staleBlockExemptReads are PCB reads that keep the ADVISORY but are never
-// REFUSED.
-//
-// pcb.snapshot is the only member, on two grounds. (1) It returns a rendered
-// picture of the live canvas, not an enumeration off the stale per-document
-// index — it is the cheapest way for an agent to SEE whether a write landed, and
-// refusing it removes the eye rather than the hazard. (2) When a snapshot IS
-// wrong it is wrong for a different reason with a different fix: a blank/stale
-// FRAME is cured by bringing the window to the foreground, not by `doc reload`
-// (memory: snapshot-blank-vs-stale-foreground). Refusing it would hand the
-// caller a next-step command that does not fix its problem — and this gate's
-// whole contract is that its message names a next step that works.
-var staleBlockExemptReads = map[string]bool{
-	"pcb.snapshot": true,
-	// Document identity/binding metadata does not enumerate cached primitives.
-	// Blocking discovery would deadlock the prescribed doc reload recovery.
-	"pcb.documents.list": true,
-	"pcb.board.info":     true,
+// staleMetadataReadActions return editor/document metadata that is independent
+// of the PCB geometry engine. A pending copper/placement refresh cannot make
+// the canvas-origin offset stale, so these reads must not inherit staleRisk.
+var staleMetadataReadActions = map[string]bool{
+	"pcb.origin.get": true,
 }
 
 // pcbStaleMarks reports whether a successful request should mark the window's
@@ -126,20 +102,29 @@ func pcbStaleMarks(req *protocol.Request) bool {
 // same engine state (so it earns the advisory) — `pcb clear --dry-run` on an
 // un-reloaded board is exactly the miscount that opened issue #112.
 func pcbStaleRead(req *protocol.Request) bool {
-	return docTypeForAction(req.Action) == "pcb" && !requestMutates(req)
+	return docTypeForAction(req.Action) == "pcb" && !requestMutates(req) &&
+		!staleMetadataReadActions[req.Action]
 }
 
 // pcbStaleClears reports whether a successful request resets the stale flag.
 // `doc reload` has no single typed action — its unique step is the
 // debug.exec_js closeDocument call (see package comment); pcb.pour.rebuild
 // clears because rebuilding pours is the documented stale-connectivity fix.
-func pcbStaleClears(req *protocol.Request) bool {
+func pcbStaleClears(req *protocol.Request, resp *protocol.Response) bool {
 	switch req.Action {
 	case "pcb.pour.rebuild":
 		return true
 	case "debug.exec_js":
 		code, _ := req.Payload["code"].(string)
-		return strings.Contains(code, "closeDocument")
+		if !strings.Contains(code, "closeDocument") || resp == nil {
+			return false
+		}
+		// A debug action can be transport-successful while closeDocument itself
+		// returns false.  Only the explicit result from doc reload proves that the
+		// old document actually closed and its PCB engine state was discarded.
+		value, _ := resp.Result["value"].(map[string]any)
+		closed, _ := value["closed"].(bool)
+		return closed
 	}
 	return false
 }
@@ -180,7 +165,7 @@ func (g *staleGuard) observe(req *protocol.Request, resp *protocol.Response) {
 	if !resp.OK {
 		return
 	}
-	if pcbStaleClears(req) {
+	if pcbStaleClears(req, resp) {
 		delete(g.last, req.WindowID)
 		return
 	}
@@ -191,115 +176,8 @@ func (g *staleGuard) observe(req *protocol.Request, resp *protocol.Response) {
 
 // staleRiskMessage builds the advisory. Deliberately free of timestamps so the
 // CLI can deduplicate identical warnings within one composite command.
-//
-// Reads reaching this point are the ones the gate did NOT refuse: a
-// staleBlockExemptReads member (pcb.snapshot) or a forceReason bypass. The
-// advisory is what remains of the old behaviour for exactly those.
 func staleRiskMessage(mutation, read string) string {
 	return fmt.Sprintf(
-		"PCB was mutated by %s since the last reload — %s (and DRC) may read stale engine state; run `easyeda doc reload` first (SKILL 铁律 5)",
+		"PCB was mutated by %s since the last reload — %s (and DRC) may read stale engine state; authoritative workflows should save, run `easyeda doc reload`, then read back; if refresh fails, treat the data as unavailable",
 		mutation, read)
-}
-
-// ── the gate ───────────────────────────────────────────────────────────────
-
-// blockedBy reports the un-reloaded mutation that makes req a stale read, or ""
-// when the read may proceed (not a PCB read, window clean, or block-exempt).
-// It does NOT consider forceReason — that is the caller's policy decision, so
-// the bypass can be audited in one place.
-func (g *staleGuard) blockedBy(req *protocol.Request) string {
-	if g == nil || req == nil {
-		return ""
-	}
-	if !pcbStaleRead(req) || staleBlockExemptReads[req.Action] {
-		return ""
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.last[req.WindowID]
-}
-
-// staleReadRefusal renders the STALE_READ error text.
-//
-// The message MUST carry a runnable next step, not a diagnosis: a verdict that
-// cannot be acted on is what produced 1780 ignored advisories. project is the
-// resolved project name when the daemon knows it, so the printed command is
-// copy-pasteable rather than a template.
-//
-// Both instructions in here are load-bearing and BOTH must be real CLI surface.
-// The first cut of this message offered `--force-reason`, a flag that has never
-// existed on any subcommand (the CLI's routing-stage bypass is `--force`, a
-// different gate) — so the gate that exists to give a runnable next step handed
-// out an unrunnable one. The escape hatch is now `--force-stale-read "<理由>"`
-// (a root persistent flag, internal/app/app.go), named after the gate it opens
-// the way `--skip-version-check` is, and deliberately NOT `--force-reason`,
-// which would read as "the reason for --force". internal/app's
-// TestRefusalMessagesOnlyNameRealCLISurface parses the string literals in this
-// file and fails if any command/flag named here is not registered.
-func staleReadRefusal(read, mutation, project string) (message, detail string) {
-	target := project
-	if target == "" {
-		target = "<name>"
-	}
-	next := "easyeda doc reload --project " + target
-	message = fmt.Sprintf(
-		"%s —— PCB 自 %s 后未 reload,读到的是旧引擎状态。\n下一步: %s\n(绕过: --force-stale-read \"<理由>\",入审计)",
-		read, mutation, next)
-	detail = fmt.Sprintf("SKILL 铁律 5 (机械门): 下一步 `%s`;确需读旧状态时用 --force-stale-read \"<理由>\"(入审计)", next)
-	return message, detail
-}
-
-// projectHint resolves the best project identity for the refusal message: the
-// caller's --project hint, else the target window's project name/uuid.
-func (s *Server) projectHint(req *protocol.Request) string {
-	for _, c := range s.stageKeyCandidates(req) {
-		if strings.TrimSpace(c) != "" {
-			return c
-		}
-	}
-	return ""
-}
-
-// checkStaleRead enforces iron rule 5 at the dispatch choke point: a PCB read on
-// a window mutated since its last reload is REFUSED with STALE_READ. Returns a
-// ready-to-send error response when the read must be refused, nil when it may
-// proceed.
-//
-// forceReason is the escape hatch, and every use of it is written to the audit
-// trail as its own `daemon.stale_read.force` row — the same discipline the stage
-// gate applies to workflow-state history (stagegate.go, verdict.Audited): a
-// bypass that leaves no trace is indistinguishable from a guard that never fired.
-// A distinct pseudo-action name (never a real catalog action) keeps the real
-// action's call/failure statistics intact while staying greppable.
-//
-// Unlike the stage gate there is no refused-force tier here: forcing a READ
-// cannot damage the board, only mislead the reader, so it is always granted —
-// and the response still carries the staleRisk advisory (observe), which the CLI
-// prints on stderr.
-func (s *Server) checkStaleRead(req *protocol.Request) *protocol.Response {
-	mutation := s.staleReads.blockedBy(req)
-	if mutation == "" {
-		return nil
-	}
-	if reason := strings.TrimSpace(req.ForceReason); reason != "" {
-		s.logf("stale-read gate: %s FORCED past %s (reason: %s)", req.Action, mutation, reason)
-		s.audit.Append(auditEntry{
-			Timestamp: time.Now().UTC(),
-			RequestID: req.ID,
-			WindowID:  req.WindowID,
-			ClientID:  req.ClientID,
-			Action:    "daemon.stale_read.force",
-			OK:        true,
-			Result: map[string]any{
-				"read":     req.Action,
-				"mutation": mutation,
-				"reason":   reason,
-				"project":  s.projectHint(req),
-			},
-		})
-		return nil
-	}
-	message, detail := staleReadRefusal(req.Action, mutation, s.projectHint(req))
-	resp := errorResponse(req.ID, "STALE_READ", message, detail)
-	return &resp
 }

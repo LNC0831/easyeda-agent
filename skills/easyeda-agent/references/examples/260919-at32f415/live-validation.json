@@ -1,0 +1,145 @@
+{
+  "schemaVersion": 1,
+  "kind": "live-validation-summary",
+  "exam": "260919-at32f415-learning-board",
+  "status": "partial-live-verified",
+  "webEditorVersion": "3.2.203",
+  "project": "ceshi",
+  "purpose": "记录代表性步骤的真实回读和工具缺口；不是完成态整板答案",
+  "schematic": {
+    "documentUuid": "f4351c9ef51e8321",
+    "components": 69,
+    "terminals": 233,
+    "connectedTerminals": 220,
+    "explicitNc": 13,
+    "nets": 46,
+    "sourceEndpointDiffs": 0,
+    "officialDrc": {
+      "fatal": 0,
+      "error": 0,
+      "warn": 0,
+      "info": 0,
+      "unknown": 0,
+      "total": 0
+    },
+    "bridge": {
+      "trees": 0,
+      "bridges": 0,
+      "orphans": 0,
+      "orphanFlags": 0,
+      "orphanTrees": 0,
+      "wireTreesTotal": 218
+    },
+    "layout": {
+      "componentCount": 69,
+      "overlapCount": 0,
+      "tightSpacingCount": 0
+    },
+    "presentationPending": {
+      "markerOverlaps": 55,
+      "missingPartitions": 1,
+      "note": "电气事实已通过；15区文字/视觉标记仍需作为独立样例继续迭代，不能用DRC=0覆盖"
+    }
+  },
+  "pcbMechanics": {
+    "documentUuid": "2e719e9419653c72",
+    "components": 69,
+    "outline": {
+      "widthMil": 3543.31,
+      "heightMil": 1968.5,
+      "radiusMil": 118.11000000000001,
+      "lineWidthMil": 10,
+      "nativeArcs": 4,
+      "locked": true
+    },
+    "origin": {
+      "offsetX": 0,
+      "offsetY": 0,
+      "affectsGeometry": false
+    },
+    "fixedRefs": [
+      "SCREW1",
+      "SCREW2",
+      "SCREW3",
+      "SCREW4",
+      "U6",
+      "CARD1"
+    ],
+    "placement": {
+      "placementDiffCountAfterFullBrowserReload": 0,
+      "bboxCollisionCount": 0,
+      "sub6MilBBoxPairCount": 0,
+      "layoutLintOutsideOutlineCount": 0,
+      "layoutLintTightSpacingCount": 0,
+      "independentReview": {
+        "status": "completed-with-findings",
+        "passedSummary": "69件/BOM/全TOP/0重叠/固定件/15区/按键等距通过",
+        "findings": [
+          "LED1不在板边",
+          "部分去耦和LDO输出电容偏远",
+          "晶振守护区受侵入",
+          "CAN ESD未对齐信号脚",
+          "LCD component-keepout未被快照证明",
+          "7组bbox间隙<12mil"
+        ]
+      }
+    }
+  },
+  "pcbRules": {
+    "configurationName": "自定义配置8",
+    "signalTrackMil": {
+      "min": 8.0,
+      "default": 8.0
+    },
+    "clearanceMil": 6.0,
+    "viaMil": {
+      "outerMin": 24.0,
+      "holeMin": 12.0
+    },
+    "powerTrackMil": {
+      "min": 8.0,
+      "default": 20.0
+    },
+    "netClass": {
+      "name": "PWR_Class",
+      "nets": [
+        "GND",
+        "+3V3",
+        "+5V"
+      ],
+      "parentTrackRule": "PWR",
+      "memberTrackRules": {
+        "GND": "PWR",
+        "+3V3": "PWR",
+        "+5V": "PWR"
+      }
+    },
+    "verifiedAfterFullBrowserReload": true
+  },
+  "observedToolIssues": [
+    {
+      "id": "web-doc-reload-spinner",
+      "symptom": "doc reload关闭PCB后openDocument不返回，留下about:blank标签和持续加载动画",
+      "dataLossObserved": false,
+      "recovery": "停止重试和现场写入，保留故障证据；修复 typed reload/open 后复测，不使用浏览器或工程树恢复",
+      "codeFix": "保存目标splitScreenId，等待旧文档退出活动态，单次15秒有界重开；需加载新connector后再现场验证"
+    },
+    {
+      "id": "drc-wrapper-shape",
+      "symptom": "Web 3.2.203读取规则返回{name,config}，overwrite只接受裸config",
+      "codeFix": "connector边界统一unwrap，写入/回读/rollback均使用裸config",
+      "liveResult": "信号/PWR/间距/过孔规则保存并全页刷新后仍存在"
+    },
+    {
+      "id": "stale-board-binding",
+      "symptom": "PCB Board绑定指向已失效原理图UUID，官方DRC多一个Netlist Error",
+      "recovery": "board rebind到当前原理图与PCB后全页刷新，Netlist Error消失"
+    }
+  ],
+  "notClaimed": [
+    "第一轮布局的独立复核发现LED板边、去耦、晶振守护区、CAN和LCD禁放证据缺口，不能称布局完成",
+    "完整PCB布线、双面GND、泪滴、丝印和PCB DRC=0尚未执行",
+    "LCD可写封装副本与实例绑定尚未在新connector现场验证",
+    "doc reload代码修复尚未在加载新connector的Web窗口复测"
+  ]
+}

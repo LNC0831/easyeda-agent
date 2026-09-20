@@ -51,7 +51,8 @@ const settleAttempts = 2
 // 所以 settleRead 认得这个码,并**当场收手**:不睡、不重试,原样把 STALE_READ
 // 交回去,让调用方报真因。判据只认 error.code,不做文本匹配。
 //
-// 目前 PCB 侧的写后回读走的是 requestReadAfterWrite 放行位(stale_read_optin.go),
+// PCB 侧的写后回读继续复用 requestReadAfterWrite；当前 daemon 返回 staleRisk
+// 提示而不拒绝，最终权威结果仍由 save → reload → readback 建立。
 // 本不该撞上这道门;这里的处理是给「有人漏了放行位」留的诚实失败路径 ——
 // 定时炸弹的正确拆法是让它爆得清楚,不是假装它不存在。
 //

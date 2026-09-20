@@ -186,10 +186,10 @@ const (
 	costFanoutChannel = 100 // too close to a preserved pin-fanout channel
 	costOffsetPerUnit = 0.1 // +offset * 0.1 — prefer shorter stubs
 	bonusOutwardSide  = -20 // direction matches the pin's outward side
-	// costOppositeSide:从引脚**背面**引出。比压器件(10000)还贵 —— 压盖是可见、可
-	// 后修的,方向反了则整根线的走向都是错的。不做硬拒绝是为了留最后一条活路:
-	// 真的四面楚歌时,一根难看的线仍好过一次失败的连接。
-	costOppositeSide = 50000
+	// costOppositeSide:首段没有沿引脚真实朝外方向离开。连接器的几何预检会拒绝
+	// 这种线(垂直于 pin rotation 也不例外)，所以规划器必须使用同一判据；把它留成
+	// 软惩罚会产生“dry-run 成功、真实执行被 geometry guard 拒绝”的假计划。
+	costOppositeSide = costHardReject
 	bonusKindDefault = -10  // direction matches the kind default (GND down / power up / port outward)
 	acCoordEps       = 0.01 // coordinate-equality tolerance
 	acOverlapEps     = 1e-6 // positive-length threshold for interval/area overlap
@@ -712,15 +712,11 @@ func scoreCandidate(pin acPin, dir string, offset float64, canonicalKind, target
 	if out == dir {
 		reasons = append(reasons, acReason{bonusOutwardSide, "matches pin outward side"})
 	}
-	// **背面引出是红线**。左侧引脚的 marker 从右边引出,桩线就要穿过或绕过器件本体
-	// —— 读图的人根本追不到那根线,而 DRC 不管这个。
-	//
-	// 朝向过去只是 -20 的奖励,而撞一次标签是 +1000:评分器于是毫不犹豫地为了躲
-	// 一次重叠把 marker 甩到引脚背面(实测 C7_N3 接 U3 左侧的 V3 脚,marker 却落在
-	// 右边)。代价必须比任何一种软破坏都贵 —— 挤一点可以后修,方向反了整张图就读错了。
-	// 避碰撞的正解是**挪器件**,不是把 marker 甩到反面。
-	if opp := oppositeDirection(out); opp != "" && dir == opp {
-		reasons = append(reasons, acReason{costOppositeSide, "引出方向与引脚朝外方向相反 —— 桩线要穿过/绕过器件本体"})
+	// 首段必须沿 pin rotation / bbox 推断出的朝外方向。过去这里只拦正反 180°，
+	// 允许 90° 垂直转出；但 connector 的 pin-exit-direction 预检要求首段与 pin
+	// 朝向一致，导致计划器选中的垂直候选在真正写入时全部失败。
+	if out != "" && dir != out {
+		reasons = append(reasons, acReason{costOppositeSide, "引出方向不沿引脚朝外方向（hard reject）"})
 	}
 	// -10 direction matches the kind default.
 	if kindDefaultDirection(canonicalKind) == dir {

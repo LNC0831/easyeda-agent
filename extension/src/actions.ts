@@ -371,6 +371,45 @@ const projectCurrent: Handler = async () => {
 	};
 };
 
+/** Create a project through the official project API, with optional immediate open. */
+const projectCreate: Handler = async (payload) => {
+	const friendlyName = requireString(payload, 'friendlyName');
+	const projectName = optionalString(payload, 'projectName');
+	const teamUuid = optionalString(payload, 'teamUuid');
+	const folderUuid = optionalString(payload, 'folderUuid');
+	const description = optionalString(payload, 'description');
+	const open = optionalBoolean(payload, 'open') === true;
+	let uuid: string | undefined;
+	try {
+		uuid = await eda.dmt_Project.createProject(
+			friendlyName, projectName, teamUuid, folderUuid, description,
+		);
+	}
+	catch (err) {
+		throw edaError(err, 'Failed to create EasyEDA project.');
+	}
+	if (!uuid) {
+		throw new ActionError(ErrorCodes.EDA_CALL_FAILED, 'Project creation returned no UUID.');
+	}
+	let opened = false;
+	if (open) {
+		try { opened = await eda.dmt_Project.openProject(uuid); }
+		catch (err) {
+			return {
+				result: { partial: true, uuid, friendlyName, projectName: projectName ?? null, created: true, opened: false },
+				warnings: [`Project was created, but opening it failed: ${describeThrown(err)}`],
+			};
+		}
+		if (!opened) {
+			return {
+				result: { partial: true, uuid, friendlyName, projectName: projectName ?? null, created: true, opened: false },
+				warnings: ['Project was created, but EasyEDA returned false while opening it; open the created project explicitly before creating documents.'],
+			};
+		}
+	}
+	return { result: { uuid, friendlyName, projectName: projectName ?? null, created: true, opened } };
+};
+
 const documentCurrent: Handler = async () => {
 	let doc;
 	try {
@@ -4641,6 +4680,52 @@ type LibraryBuildInventoryReader = {
 };
 
 /**
+ * Open and focus a library canvas, then prove that subsequent primitive calls
+ * will address the requested asset.  `lib_*.openInEditor()` can return a tab id
+ * while leaving the previously focused library tab active (observed in the Web
+ * editor while creating the 260919 M3 footprint), so a returned tab id alone is
+ * not safe evidence for a write.
+ */
+async function activateLibraryDocument(
+	uuid: string,
+	libraryUuid: string,
+	libraryType: ELIB_LibraryType.SYMBOL | ELIB_LibraryType.FOOTPRINT,
+	expectedDocumentType: EDMT_EditorDocumentType.SYMBOL_COMPONENT | EDMT_EditorDocumentType.FOOTPRINT,
+	label: string,
+): Promise<string> {
+	let splitScreenId: string | undefined;
+	try {
+		const before = await eda.dmt_SelectControl.getCurrentDocumentInfo();
+		if (before?.tabId) splitScreenId = await eda.dmt_EditorControl.getSplitScreenIdByTabId(before.tabId);
+	}
+	catch { /* opening without a split id is supported */ }
+
+	const tabId = await eda.dmt_EditorControl.openLibraryDocument(libraryUuid, libraryType, uuid, splitScreenId);
+	if (!tabId) throw new ActionError(ErrorCodes.INVALID_STATE, `EasyEDA did not open the ${label} editor.`);
+	const activated = await eda.dmt_EditorControl.activateDocument(tabId);
+	if (!activated) throw new ActionError(ErrorCodes.INVALID_STATE, `EasyEDA opened ${label} "${uuid}" but did not activate its tab.`);
+
+	let actual: Awaited<ReturnType<typeof eda.dmt_SelectControl.getCurrentDocumentInfo>> | undefined;
+	for (let attempt = 0; attempt < 20; attempt++) {
+		try { actual = await eda.dmt_SelectControl.getCurrentDocumentInfo(); }
+		catch { actual = undefined; }
+		if (
+			actual?.uuid === uuid &&
+			actual.parentLibraryUuid === libraryUuid &&
+			actual.documentType === expectedDocumentType
+		) return tabId;
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+	}
+	const actualSummary = actual
+		? `uuid=${actual.uuid}, parentLibraryUuid=${actual.parentLibraryUuid ?? '<missing>'}, documentType=${actual.documentType}`
+		: 'no current document';
+	throw new ActionError(
+		ErrorCodes.INVALID_STATE,
+		`EasyEDA did not focus the requested ${label} before mutation (${actualSummary}); no geometry was created.`,
+	);
+}
+
+/**
  * `library.*.build` is a one-shot authoring operation, not append/replace.
  * Opening the editor is read-only; every supported primitive inventory must be
  * proven empty before the first create call.  Unknown/incomplete inventory is
@@ -4682,8 +4767,11 @@ const libraryFootprintBuild: Handler = async (payload) => {
 	const createdPads: string[] = [];
 	const createdLines: string[] = [];
 	try {
-		tabId = await eda.lib_Footprint.openInEditor(uuid, libraryUuid);
-		if (!tabId) throw new ActionError(ErrorCodes.INVALID_STATE, 'EasyEDA did not open the footprint editor.');
+		tabId = await activateLibraryDocument(
+			uuid, libraryUuid,
+			'4' as ELIB_LibraryType.FOOTPRINT, 4 as EDMT_EditorDocumentType.FOOTPRINT,
+			'footprint',
+		);
 		await requireEmptyLibraryBuildTarget('Footprint', [
 			{ key: 'pads', getAllPrimitiveId: () => eda.pcb_PrimitivePad.getAllPrimitiveId() },
 			{ key: 'polylines', getAllPrimitiveId: () => eda.pcb_PrimitivePolyline.getAllPrimitiveId() },
@@ -4740,6 +4828,91 @@ const libraryFootprintBuild: Handler = async (payload) => {
 					: []),
 			],
 		};
+	}
+};
+
+/** Add a persistent placement/copper rule region inside an existing footprint. */
+const libraryFootprintRegionCreate: Handler = async (payload) => {
+	const uuid = requireString(payload, 'uuid');
+	const libraryUuid = requireString(payload, 'libraryUuid');
+	const poly = closedPolygonFromPoints(payload.points); // validate before opening/mutating
+	const layer = (optionalNumber(payload, 'layer') ?? 12) as unknown as TPCB_LayersOfRegion;
+	const ruleTypes = parseRegionRuleTypes(payload.ruleType ?? payload.ruleTypes ?? ['no-components']);
+	const regionName = optionalString(payload, 'name');
+	const lineWidth = optionalNumber(payload, 'lineWidth');
+	const lock = optionalBoolean(payload, 'locked') !== false;
+	const requestedSource = poly.getSource();
+	let tabId: string | undefined;
+	let primitiveId = '';
+	let actualState: Record<string, unknown> | null = null;
+	try {
+		tabId = await activateLibraryDocument(
+			uuid, libraryUuid,
+			'4' as ELIB_LibraryType.FOOTPRINT, 4 as EDMT_EditorDocumentType.FOOTPRINT,
+			'footprint',
+		);
+		const region = await eda.pcb_PrimitiveRegion.create(
+			layer, poly,
+			ruleTypes as unknown as Array<EPCB_PrimitiveRegionRuleType>,
+			regionName, lineWidth, lock,
+		);
+		if (!region) throw new Error('region create returned no primitive');
+		primitiveId = region.getState_PrimitiveId();
+		const saved = await eda.pcb_Document.save();
+		if (!saved) throw new Error('pcb_Document.save returned false after region creation');
+		const actual = await eda.pcb_PrimitiveRegion.get(primitiveId);
+		if (!actual) throw new Error('region readback returned no primitive');
+		actualState = {
+			primitiveId: actual.getState_PrimitiveId(),
+			layer: Number(actual.getState_Layer()),
+			ruleType: [...actual.getState_RuleType()].map(Number).sort((a, b) => a - b),
+			name: actual.getState_RegionName() ?? null,
+			lineWidth: actual.getState_LineWidth(),
+			locked: actual.getState_PrimitiveLock(),
+			source: actual.getState_ComplexPolygon().getSource(),
+		};
+		const expectedRuleTypes = [...ruleTypes].sort((a, b) => a - b);
+		const differences: string[] = [];
+		if (actualState.primitiveId !== primitiveId) differences.push('primitiveId');
+		if (actualState.layer !== Number(layer)) differences.push('layer');
+		if (exactJSON(actualState.ruleType) !== exactJSON(expectedRuleTypes)) differences.push('ruleType');
+		if (actualState.name !== (regionName ?? null)) differences.push('name');
+		if (lineWidth !== undefined && actualState.lineWidth !== lineWidth) differences.push('lineWidth');
+		if (actualState.locked !== lock) differences.push('locked');
+		if (exactJSON(actualState.source) !== exactJSON(requestedSource)) differences.push('source');
+		if (differences.length) throw new Error(`region readback differs for: ${differences.join(', ')}`);
+		return {
+			result: {
+				uuid, libraryUuid, tabId, primitiveId, saved: true, verified: true,
+				requested: { layer: Number(layer), ruleType: expectedRuleTypes, name: regionName ?? null, lineWidth: lineWidth ?? null, locked: lock, source: requestedSource },
+				actual: actualState,
+			},
+		};
+	}
+	catch (err) {
+		if (primitiveId) {
+			let deleteRolledBack = false;
+			let saveRolledBack = false;
+			let absentAfterRollback = false;
+			const rollbackErrors: string[] = [];
+			try { deleteRolledBack = await eda.pcb_PrimitiveRegion.delete(primitiveId); }
+			catch (rollbackErr) { rollbackErrors.push(`delete: ${describeThrown(rollbackErr)}`); }
+			try { saveRolledBack = await eda.pcb_Document.save(); }
+			catch (rollbackErr) { rollbackErrors.push(`save: ${describeThrown(rollbackErr)}`); }
+			try { absentAfterRollback = !(await eda.pcb_PrimitiveRegion.get(primitiveId)); }
+			catch (rollbackErr) { rollbackErrors.push(`readback: ${describeThrown(rollbackErr)}`); }
+			const rolledBack = saveRolledBack && absentAfterRollback;
+			return {
+				result: {
+					partial: true, uuid, libraryUuid, tabId: tabId ?? null, primitiveId,
+					verified: false, actual: actualState, deleteRolledBack, saveRolledBack,
+					absentAfterRollback, rolledBack, rollbackErrors, error: describeThrown(err),
+				},
+				warnings: ['Footprint region creation failed after mutation began; inspect the opened footprint before retrying.'],
+			};
+		}
+		if (err instanceof ActionError) throw err;
+		throw edaError(err, 'Failed to create a rule region inside the footprint editor.');
 	}
 };
 
@@ -4824,8 +4997,11 @@ const librarySymbolBuild: Handler = async (payload) => {
 	let outlineId = '';
 	let tabId: string | undefined;
 	try {
-		tabId = await eda.lib_Symbol.openInEditor(uuid, libraryUuid);
-		if (!tabId) throw new ActionError(ErrorCodes.INVALID_STATE, 'EasyEDA did not open the symbol editor.');
+		tabId = await activateLibraryDocument(
+			uuid, libraryUuid,
+			'2' as ELIB_LibraryType.SYMBOL, 2 as EDMT_EditorDocumentType.SYMBOL_COMPONENT,
+			'symbol',
+		);
 		await requireEmptyLibraryBuildTarget('Symbol', [
 			{ key: 'pins', getAllPrimitiveId: () => eda.sch_PrimitivePin.getAllPrimitiveId() },
 			{ key: 'polygons', getAllPrimitiveId: () => eda.sch_PrimitivePolygon.getAllPrimitiveId() },
@@ -6760,20 +6936,27 @@ export const schematicPinDisconnect: Handler = async (payload) => {
  */
 const documentOpen: Handler = async (payload) => {
 	const uuid = requireString(payload, 'uuid');
+	// Reload callers capture the target tab's split BEFORE closing it. Prefer
+	// that stable destination over inferring a split from the post-close active
+	// tab, which can temporarily be the host's about:blank/loading tab.
+	const requestedSplitScreenId = optionalString(payload, 'splitScreenId')?.trim() || undefined;
 	// After closing a tab, the host's implicit destination can be stale even
 	// though a remaining tab is active. Resolve its split through the official
-	// API; older hosts without this metadata keep the original open path.
-	let splitScreenId: string | undefined;
-	try {
-		const current = await eda.dmt_SelectControl.getCurrentDocumentInfo();
-		if (typeof current?.tabId === 'string' && current.tabId.trim()) {
-			const split = await eda.dmt_EditorControl.getSplitScreenIdByTabId(current.tabId);
-			if (typeof split === 'string' && split.trim()) {
-				splitScreenId = split;
+	// API only when the caller did not preserve the target split. Older hosts
+	// without this metadata keep the original one-argument open path.
+	let splitScreenId = requestedSplitScreenId;
+	if (splitScreenId === undefined) {
+		try {
+			const current = await eda.dmt_SelectControl.getCurrentDocumentInfo();
+			if (typeof current?.tabId === 'string' && current.tabId.trim()) {
+				const split = await eda.dmt_EditorControl.getSplitScreenIdByTabId(current.tabId);
+				if (typeof split === 'string' && split.trim()) {
+					splitScreenId = split;
+				}
 			}
 		}
+		catch { /* split metadata is optional; never guess a destination ID */ }
 	}
-	catch { /* split metadata is optional; never guess a destination ID */ }
 	let tabId;
 	try {
 		tabId = splitScreenId === undefined
@@ -7484,6 +7667,7 @@ const pcbSilkList: Handler = async () => {
 				mirror: !!a.getState_Mirror?.(),
 				reverse: !!a.getState_Reverse?.(),
 				rotation: Number(a.getState_Rotation?.() ?? 0),
+				fontFamily: a.getState_FontFamily?.() ?? '',
 				fontSize: Number(a.getState_FontSize?.() ?? 0) || 0,
 				componentId: pid,
 				componentLayer: compLayer.get(pid) ?? 0,
@@ -7512,6 +7696,7 @@ const pcbSilkList: Handler = async () => {
 				mirror: !!s.getState_Mirror?.(),
 				reverse: !!s.getState_Reverse?.(),
 				rotation: Number(s.getState_Rotation?.() ?? 0),
+				fontFamily: s.getState_FontFamily?.() ?? '',
 				fontSize: Number(s.getState_FontSize?.() ?? 0) || 0,
 				componentId: '',
 				componentLayer: 0,
@@ -7539,10 +7724,23 @@ const pcbSilkAdd: Handler = async (payload) => {
 	const fontSize = optionalNumber(payload, 'fontSize') ?? 40;
 	const lineWidth = optionalNumber(payload, 'lineWidth') ?? 6;
 	const rotation = optionalNumber(payload, 'rotation') ?? 0;
+	const fontFamily = optionalString(payload, 'fontFamily') ?? 'default';
+	if (fontFamily !== 'default') {
+		try {
+			const fonts = (await eda.sys_FontManager.getFontsList()) ?? [];
+			if (!fonts.some(f => f.toLowerCase() === fontFamily.toLowerCase())) {
+				const added = await eda.sys_FontManager.addFont(fontFamily);
+				if (!added) throw new Error(`font manager did not add ${fontFamily}`);
+			}
+		}
+		catch (err) {
+			throw edaError(err, `Font ${fontFamily} is not available to EasyEDA.`);
+		}
+	}
 	let s;
 	try {
 		s = await eda.pcb_PrimitiveString.create(
-			layer, x, y, text, 'default', fontSize, lineWidth,
+			layer, x, y, text, fontFamily, fontSize, lineWidth,
 			1 as EPCB_PrimitiveStringAlignMode, rotation, false, 0, false, false,
 		);
 	}
@@ -7556,7 +7754,7 @@ const pcbSilkAdd: Handler = async (payload) => {
 	let bbox;
 	try { bbox = await eda.pcb_Primitive.getPrimitivesBBox([id]); }
 	catch { /* bbox optional */ }
-	return { result: { primitiveId: id, layer: Number(layer), x, y, fontSize, lineWidth, rotation, bbox } };
+	return { result: { primitiveId: id, layer: Number(layer), x, y, fontFamily: s.getState_FontFamily?.() ?? fontFamily, fontSize, lineWidth, rotation, bbox } };
 };
 
 // pcb.silk.import_svg — create a FILLED silkscreen graphic from a pre-parsed
@@ -7639,7 +7837,7 @@ const pcbSilkSet: Handler = async (payload) => {
 	else throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'Missing "primitiveIds" (string or string[]).');
 
 	const baseProps: Record<string, unknown> = {};
-	for (const k of ['x', 'y', 'rotation', 'fontSize', 'lineWidth', 'text'] as const) {
+	for (const k of ['x', 'y', 'rotation', 'fontFamily', 'fontSize', 'lineWidth', 'text'] as const) {
 		if (payload[k] !== undefined && payload[k] !== null) baseProps[k] = payload[k];
 	}
 
@@ -7657,7 +7855,18 @@ const pcbSilkSet: Handler = async (payload) => {
 		}
 	}
 	if (Object.keys(baseProps).length === 0 && !align) {
-		throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'nothing to do — provide x/y/rotation/fontSize/lineWidth/text, and/or --align (+ --ref).');
+		throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'nothing to do — provide x/y/rotation/fontFamily/fontSize/lineWidth/text, and/or --align (+ --ref).');
+	}
+	if (typeof baseProps.fontFamily === 'string' && baseProps.fontFamily !== 'default') {
+		try {
+			const fontFamily = baseProps.fontFamily;
+			const fonts = (await eda.sys_FontManager.getFontsList()) ?? [];
+			if (!fonts.some(f => f.toLowerCase() === fontFamily.toLowerCase())) {
+				const added = await eda.sys_FontManager.addFont(fontFamily);
+				if (!added) throw new Error(`font manager did not add ${fontFamily}`);
+			}
+		}
+		catch (err) { throw edaError(err, `Font ${String(baseProps.fontFamily)} is not available to EasyEDA.`); }
 	}
 
 	const attrIds = new Set<string>((await eda.pcb_PrimitiveAttribute.getAll() ?? []).map(a => a.getState_PrimitiveId()));
@@ -7692,14 +7901,36 @@ const pcbSilkSet: Handler = async (payload) => {
 				results.push({ primitiveId: id, ok: false, error: 'nothing to set for this id' });
 				continue;
 			}
+			let modified;
 			if (isAttr) {
 				if ('text' in props) { props.value = props.text; delete props.text; }
-				await eda.pcb_PrimitiveAttribute.modify(id, props as never);
+				modified = await eda.pcb_PrimitiveAttribute.modify(id, props as never);
 			}
 			else {
-				await eda.pcb_PrimitiveString.modify(id, props as never);
+				modified = await eda.pcb_PrimitiveString.modify(id, props as never);
 			}
-			results.push({ primitiveId: id, ok: true, x: props.x, y: props.y });
+			if (!modified) {
+				results.push({ primitiveId: id, ok: false, verified: false, error: 'modify returned no primitive' });
+				continue;
+			}
+			const actual = isAttr ? await eda.pcb_PrimitiveAttribute.get(id) : await eda.pcb_PrimitiveString.get(id);
+			if (!actual) {
+				results.push({ primitiveId: id, ok: false, verified: false, error: 'modified primitive was not found by readback' });
+				continue;
+			}
+			const requestedFont = typeof props.fontFamily === 'string' ? props.fontFamily : null;
+			const actualFont = actual.getState_FontFamily?.() ?? null;
+			const fontVerified = requestedFont === null
+				|| (typeof actualFont === 'string' && actualFont.toLowerCase() === requestedFont.toLowerCase());
+			results.push({
+				primitiveId: id, ok: fontVerified, verified: fontVerified,
+				requested: { ...props }, actual: {
+					x: actual.getState_X?.() ?? null, y: actual.getState_Y?.() ?? null,
+					fontFamily: actualFont,
+				},
+				fontFamily: actualFont,
+				...(fontVerified ? {} : { error: `fontFamily readback differs: requested=${requestedFont} actual=${String(actualFont)}` }),
+			});
 		}
 		catch (err) {
 			results.push({ primitiveId: id, ok: false, error: String(err) });
@@ -10399,6 +10630,215 @@ const pcbDrcRules: Handler = async () => {
 	return { result: { rules: rules ?? null } };
 };
 
+/**
+ * `getCurrentRuleConfiguration()` returns `{ name, config }` in EasyEDA Pro
+ * 3.2.203, while `overwriteCurrentRuleConfiguration()` accepts only the bare
+ * `config` object.  Some older/test hosts already return the bare object, so
+ * normalize both shapes at the connector boundary.
+ */
+const barePcbRuleConfiguration = (value: unknown): Record<string, unknown> | null => {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+	const record = value as Record<string, unknown>;
+	const nested = record.config;
+	if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+		return nested as Record<string, unknown>;
+	}
+	return record;
+};
+
+/** Replace the complete opaque rule payload exported by pcb.drc.rules. */
+const pcbDrcRulesSet: Handler = async (payload) => {
+	const suppliedRuleConfiguration = payload.ruleConfiguration ?? payload.rules;
+	const ruleConfiguration = barePcbRuleConfiguration(suppliedRuleConfiguration);
+	if (!ruleConfiguration) {
+		throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'ruleConfiguration must be a complete JSON object.');
+	}
+	const netRules = payload.netRules;
+	if (netRules !== undefined && !Array.isArray(netRules)) {
+		throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'netRules must be an array when provided.');
+	}
+	let beforeRules: Record<string, unknown> | null = null;
+	let beforeNetRules: Array<Record<string, unknown>> | undefined;
+	try {
+		beforeRules = barePcbRuleConfiguration(await eda.pcb_Drc.getCurrentRuleConfiguration());
+		if (netRules !== undefined) beforeNetRules = await eda.pcb_Drc.getNetRules();
+	}
+	catch (err) {
+		throw edaError(err, 'Failed to read the current PCB rules before overwrite.');
+	}
+	if (!beforeRules || typeof beforeRules !== 'object' || Array.isArray(beforeRules)) {
+		throw new ActionError(ErrorCodes.INVALID_STATE, 'Current PCB rule configuration is unavailable; refusing an overwrite that cannot be rolled back.');
+	}
+	if (netRules !== undefined && !Array.isArray(beforeNetRules)) {
+		throw new ActionError(ErrorCodes.INVALID_STATE, 'Current PCB net rules are unavailable; refusing a two-stage overwrite that cannot be rolled back.');
+	}
+	if (payload.dryRun === true) {
+		return { result: {
+			dryRun: true,
+			before: { ruleConfiguration: beforeRules, ...(netRules === undefined ? {} : { netRules: beforeNetRules }) },
+			requested: { ruleConfiguration, ...(netRules === undefined ? {} : { netRules }) },
+		} };
+	}
+
+	const readActual = async (): Promise<{
+		actual: { ruleConfiguration: Record<string, unknown> | null; netRules?: Array<Record<string, unknown>> } | null;
+		error: string | null;
+	}> => {
+		try {
+			const actualRules = barePcbRuleConfiguration(await eda.pcb_Drc.getCurrentRuleConfiguration());
+			const actualNetRules = netRules === undefined ? undefined : await eda.pcb_Drc.getNetRules();
+			return {
+				actual: { ruleConfiguration: actualRules ?? null, ...(actualNetRules === undefined ? {} : { netRules: actualNetRules }) },
+				error: null,
+			};
+		}
+		catch (err) { return { actual: null, error: describeThrown(err) }; }
+	};
+	const rollback = async () => {
+		let rollbackRulesWritten = false;
+		let rollbackNetRulesWritten = netRules === undefined;
+		const rollbackErrors: string[] = [];
+		try { rollbackRulesWritten = await eda.pcb_Drc.overwriteCurrentRuleConfiguration(beforeRules as Record<string, unknown>); }
+		catch (err) { rollbackErrors.push(`ruleConfiguration: ${describeThrown(err)}`); }
+		if (netRules !== undefined) {
+			try { rollbackNetRulesWritten = await eda.pcb_Drc.overwriteNetRules(beforeNetRules as Array<Record<string, unknown>>); }
+			catch (err) { rollbackErrors.push(`netRules: ${describeThrown(err)}`); }
+		}
+		const finalReadback = await readActual();
+		const rolledBack = !finalReadback.error && !!finalReadback.actual
+			&& exactJSON(finalReadback.actual.ruleConfiguration) === exactJSON(beforeRules)
+			&& (netRules === undefined || exactJSON(finalReadback.actual.netRules) === exactJSON(beforeNetRules));
+		return { rollbackRulesWritten, rollbackNetRulesWritten, rollbackErrors, rolledBack, finalReadback };
+	};
+
+	let rulesWritten = false;
+	try {
+		rulesWritten = await eda.pcb_Drc.overwriteCurrentRuleConfiguration(ruleConfiguration as Record<string, unknown>);
+	}
+	catch (err) {
+		const rollbackResult = await rollback();
+		return {
+			result: {
+				partial: true, verified: false, rulesWritten: null, netRulesWritten: false,
+				writeError: describeThrown(err), rollbackAttempted: true,
+				rollbackRulesWritten: rollbackResult.rollbackRulesWritten,
+				rollbackNetRulesWritten: rollbackResult.rollbackNetRulesWritten,
+				rollbackErrors: rollbackResult.rollbackErrors, rolledBack: rollbackResult.rolledBack,
+				actual: rollbackResult.finalReadback.actual, readbackError: rollbackResult.finalReadback.error,
+			},
+			warnings: ['The rule-configuration write threw after the call began; rollback was attempted because mutation status was uncertain.'],
+		};
+	}
+	if (!rulesWritten) {
+		const readback = await readActual();
+		const changed = !!readback.actual
+			&& exactJSON(readback.actual.ruleConfiguration) !== exactJSON(beforeRules);
+		return {
+			result: {
+				partial: changed || !!readback.error, writeFailed: true, verified: false,
+				rulesWritten: false, netRulesWritten: false, actual: readback.actual,
+				readbackError: readback.error,
+			},
+			warnings: ['EasyEDA returned false while writing the rule configuration; net rules were not attempted.'],
+		};
+	}
+
+	let netRulesWritten = netRules === undefined;
+	let netRulesWriteError: string | null = null;
+	if (netRules !== undefined) {
+		try { netRulesWritten = await eda.pcb_Drc.overwriteNetRules(netRules as Array<Record<string, unknown>>); }
+		catch (err) { netRulesWriteError = describeThrown(err); }
+	}
+	if (!netRulesWritten || netRulesWriteError) {
+		const rollbackResult = await rollback();
+		return {
+			result: {
+				partial: true, verified: false, rulesWritten: true,
+				netRulesWritten: netRulesWriteError ? null : false,
+				...(netRulesWriteError ? { writeError: netRulesWriteError } : { writeFailed: true }),
+				rollbackAttempted: true,
+				rollbackRulesWritten: rollbackResult.rollbackRulesWritten,
+				rollbackNetRulesWritten: rollbackResult.rollbackNetRulesWritten,
+				rollbackErrors: rollbackResult.rollbackErrors, rolledBack: rollbackResult.rolledBack,
+				actual: rollbackResult.finalReadback.actual, readbackError: rollbackResult.finalReadback.error,
+			},
+			warnings: ['The net-rule write failed after the rule configuration was written; both rule sets were rolled back and read back.'],
+		};
+	}
+
+	const readback = await readActual();
+	if (readback.error || !readback.actual) {
+		return {
+			result: {
+				partial: true, rulesWritten: true, netRulesWritten: true, verified: false,
+				actual: readback.actual, readbackError: readback.error ?? 'readback returned no data',
+			},
+			warnings: ['PCB rules were written, but final readback failed; the applied state is unavailable.'],
+		};
+	}
+	const ruleConfigurationVerified = exactJSON(readback.actual.ruleConfiguration) === exactJSON(ruleConfiguration);
+	const netRulesVerified = netRules === undefined || exactJSON(readback.actual.netRules) === exactJSON(netRules);
+	return {
+		result: {
+			rulesWritten, netRulesWritten,
+			ruleConfigurationVerified, netRulesVerified,
+			verified: rulesWritten && netRulesWritten && ruleConfigurationVerified && netRulesVerified,
+			actual: readback.actual,
+		},
+		...((rulesWritten && netRulesWritten && ruleConfigurationVerified && netRulesVerified) ? {} : {
+			warnings: ['EasyEDA reported both writes successful, but exact readback differs; inspect actual before continuing.'],
+		}),
+	};
+};
+
+const pcbNetClassList: Handler = async () => {
+	try {
+		const classes = (await eda.pcb_Drc.getAllNetClasses()) ?? [];
+		const netRules = (await eda.pcb_Drc.getNetRules()) ?? [];
+		return { result: { classes, netRules, count: classes.length } };
+	}
+	catch (err) {
+		throw edaError(err, 'Failed to list PCB net classes and their rule assignments.');
+	}
+};
+
+const pcbNetClassCreate: Handler = async (payload) => {
+	const name = requireString(payload, 'name');
+	const nets = [...new Set(requireStringArray(payload, 'nets'))];
+	if (!nets.length) throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'nets must contain at least one PCB net name.');
+	const allNets = new Set((await eda.pcb_Net.getAllNetsName()) ?? []);
+	const missing = nets.filter(n => !allNets.has(n));
+	if (missing.length) {
+		throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, `Net class ${name} references missing net(s): ${missing.join(', ')}`);
+	}
+	const existing = ((await eda.pcb_Drc.getAllNetClasses()) ?? []).find(c => c.name === name);
+	if (existing) {
+		const requested = [...nets].sort();
+		const actual = [...(existing.nets ?? [])].sort();
+		if (exactJSON(requested) === exactJSON(actual)) {
+			return { result: { created: false, alreadyExists: true, verified: true, netClass: existing } };
+		}
+		throw new ActionError(
+			ErrorCodes.PRECONDITION_REFUSED,
+			`Net class ${name} already exists with different members; use a different name or edit it explicitly in EasyEDA.`,
+			`existing=${actual.join(',')} requested=${requested.join(',')}`,
+		);
+	}
+	const colorRaw = payload.color;
+	const color = (colorRaw && typeof colorRaw === 'object' && !Array.isArray(colorRaw))
+		? colorRaw as { r: number; g: number; b: number; alpha: number }
+		: { r: 0, g: 128, b: 255, alpha: 1 };
+	let ok = false;
+	try { ok = await eda.pcb_Drc.createNetClass(name, nets, color); }
+	catch (err) { throw edaError(err, `Failed to create PCB net class ${name}.`); }
+	const readback = ((await eda.pcb_Drc.getAllNetClasses()) ?? []).find(c => c.name === name);
+	const verified = !!readback && exactJSON([...(readback.nets ?? [])].sort()) === exactJSON([...nets].sort());
+	return {
+		result: { created: ok, verified, netClass: readback ?? null },
+		...(verified ? {} : { warnings: [`Net class ${name} was not confirmed by readback; do not assume the rule assignment exists.`] }),
+	};
+};
+
 // ─── PCB routing (copper tracks + vias) ──────────────────────────────
 // Real routing primitives: a track is a line on a copper layer; a via is a
 // plated hole. Both bind to a net by NAME (pull names from pcb.nets.list). Layer
@@ -10683,7 +11123,12 @@ function parseRegionRuleTypes(raw: unknown): number[] {
 	for (const r of arr) {
 		if (typeof r === 'number') { out.push(r); continue; }
 		if (typeof r === 'string') {
-			const v = REGION_RULE_BY_NAME[r.trim().toLowerCase()];
+			const normalized = r.trim().toLowerCase();
+			if (/^\d+$/.test(normalized)) {
+				out.push(Number(normalized));
+				continue;
+			}
+			const v = REGION_RULE_BY_NAME[normalized];
 			if (v == null) {
 				throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD,
 					`Unknown region ruleType "${r}". Use a name (${Object.keys(REGION_RULE_BY_NAME).join(', ')}) or an enum number.`);
@@ -11345,10 +11790,11 @@ const pcbRouteViaHop: Handler = async (payload) => {
 };
 
 // ─── Board outline (板框) ──────────────────────────────────────────────
-// The board outline is a closed loop of lines on the BOARD_OUTLINE layer (11).
-// Native arcs do not commit on the current build, so curves are line-segment
-// approximated by the caller. The layer is the numeric literal — EPCB_LayerId is
-// a plain (non-const) enum that may not exist as a runtime global.
+// The board outline is one closed pcb_PrimitivePolyline on layer 11. EasyEDA's
+// verified polygon source supports `ARC,signedSweep,endX,endY`; callers can pass
+// that source directly so rounded corners stay native arcs. The layer is the
+// numeric literal — EPCB_LayerId is a plain (non-const) enum that may not exist
+// as a runtime global.
 const BOARD_OUTLINE_LAYER = 11 as unknown as TPCB_LayersOfLine;
 
 /** Ray-casting point-in-polygon over a closed ring of [x,y] points. */
@@ -11364,25 +11810,168 @@ function pointInPolygon(x: number, y: number, ring: Array<[number, number]>): bo
 	return inside;
 }
 
+function sourceIsClosed(source: Array<string | number>): boolean {
+	if (source.length < 6 || typeof source[0] !== 'number' || typeof source[1] !== 'number') return false;
+	const endX = source[source.length - 2];
+	const endY = source[source.length - 1];
+	return typeof endX === 'number' && Number.isFinite(endX)
+		&& typeof endY === 'number' && Number.isFinite(endY)
+		&& Math.abs(source[0] - endX) <= 1e-6
+		&& Math.abs(source[1] - endY) <= 1e-6;
+}
+
+function outlineSourceCounts(source: Array<string | number>): { segments: number; arcs: number } {
+	let segments = 0;
+	let arcs = 0;
+	let i = 2;
+	while (i < source.length) {
+		if (source[i] === 'ARC') {
+			arcs++;
+			i += 4;
+			continue;
+		}
+		if (source[i] !== 'L') break;
+		i++;
+		while (i + 1 < source.length && typeof source[i] === 'number' && typeof source[i + 1] === 'number') {
+			segments++;
+			i += 2;
+		}
+	}
+	return { segments, arcs };
+}
+
 /**
- * Set the board outline from a closed polygon of points (mil, y-up). Replaces
- * any existing outline, draws one line per edge (closing the loop), and reports
- * whether every component falls inside.
+ * Recognize a closed four-line/four-quarter-arc rounded rectangle. EasyEDA may
+ * rotate a saved polygon source so its first command is ARC instead of L, and
+ * it quantizes persisted coordinates to 0.01 mil. Parse the whole cyclic path
+ * instead of depending on the command chosen as its start.
+ */
+function roundedRectRadius(source: unknown): number | null {
+	if (!Array.isArray(source) || source.length < 6
+		|| typeof source[0] !== 'number' || !Number.isFinite(source[0])
+		|| typeof source[1] !== 'number' || !Number.isFinite(source[1])) return null;
+	type Segment = { kind: 'L' | 'ARC'; startX: number; startY: number; endX: number; endY: number; sweep?: number };
+	const startX = source[0];
+	const startY = source[1];
+	let currentX = startX;
+	let currentY = startY;
+	const segments: Segment[] = [];
+	let i = 2;
+	while (i < source.length) {
+		const command = source[i++];
+		if (command === 'ARC') {
+			const sweep = source[i++];
+			const endX = source[i++];
+			const endY = source[i++];
+			if (typeof sweep !== 'number' || !Number.isFinite(sweep)
+				|| typeof endX !== 'number' || !Number.isFinite(endX)
+				|| typeof endY !== 'number' || !Number.isFinite(endY)) return null;
+			segments.push({ kind: 'ARC', startX: currentX, startY: currentY, endX, endY, sweep });
+			currentX = endX;
+			currentY = endY;
+			continue;
+		}
+		if (command !== 'L') return null;
+		let points = 0;
+		while (i + 1 < source.length && typeof source[i] === 'number' && typeof source[i + 1] === 'number') {
+			const endX = source[i++] as number;
+			const endY = source[i++] as number;
+			if (!Number.isFinite(endX) || !Number.isFinite(endY)) return null;
+			segments.push({ kind: 'L', startX: currentX, startY: currentY, endX, endY });
+			currentX = endX;
+			currentY = endY;
+			points++;
+		}
+		if (points === 0) return null;
+	}
+
+	const closeTolerance = 1e-6;
+	if (segments.length !== 8
+		|| Math.abs(currentX - startX) > closeTolerance
+		|| Math.abs(currentY - startY) > closeTolerance) return null;
+	for (let index = 0; index < segments.length; index++) {
+		if (segments[index].kind === segments[(index + 1) % segments.length].kind) return null;
+	}
+
+	const coordinateTolerance = 1e-6;
+	const radiusTolerance = 0.011;
+	const radii: number[] = [];
+	let sweepSign = 0;
+	for (const segment of segments) {
+		const dx = segment.endX - segment.startX;
+		const dy = segment.endY - segment.startY;
+		if (segment.kind === 'L') {
+			if (Math.hypot(dx, dy) <= coordinateTolerance
+				|| (Math.abs(dx) > coordinateTolerance && Math.abs(dy) > coordinateTolerance)) return null;
+			continue;
+		}
+		if (segment.sweep === undefined || Math.abs(Math.abs(segment.sweep) - 90) > coordinateTolerance
+			|| Math.abs(dx) <= coordinateTolerance || Math.abs(dy) <= coordinateTolerance
+			|| Math.abs(Math.abs(dx) - Math.abs(dy)) > radiusTolerance) return null;
+		const sign = Math.sign(segment.sweep);
+		if (sweepSign !== 0 && sign !== sweepSign) return null;
+		sweepSign = sign;
+		radii.push(Math.hypot(dx, dy) / Math.SQRT2);
+	}
+	if (radii.length !== 4 || radii.some(radius => !(radius > 0)
+		|| Math.abs(radius - radii[0]) > radiusTolerance)) return null;
+	return radii.reduce((sum, radius) => sum + radius, 0) / radii.length;
+}
+
+function centerlineBounds(points: Array<[number, number]>): { minX: number; maxX: number; minY: number; maxY: number } {
+	const xs = points.map(p => p[0]);
+	const ys = points.map(p => p[1]);
+	return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+}
+
+/**
+ * Set the board outline from either a closed polygon of points or a verified
+ * EasyEDA polygon source (`L` + `ARC`). Replaces any existing outline and
+ * reports whether every component falls inside.
  */
 const pcbOutlineSet: Handler = async (payload) => {
-	const raw = payload.points;
-	if (!Array.isArray(raw) || raw.length < 3) {
-		throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'points must be an array of >= 3 [x,y] pairs (mil).');
+	const rawPoints = payload.points;
+	const rawSource = payload.source;
+	if (rawPoints !== undefined && rawSource !== undefined) {
+		throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, 'Pass exactly one of points or source, not both.');
 	}
-	const points: Array<[number, number]> = [];
-	for (const p of raw) {
-		if (!Array.isArray(p) || p.length < 2 || typeof p[0] !== 'number' || typeof p[1] !== 'number') {
-			throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'each point must be [x, y] numbers.');
+	let points: Array<[number, number]>;
+	let src: Array<string | number>;
+	let outlineFormat: string;
+	if (rawSource !== undefined) {
+		const parsed = polygonSourceToPoints(rawSource);
+		if (!Array.isArray(rawSource) || !parsed.points || !sourceIsClosed(rawSource as Array<string | number>)) {
+			throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD,
+				'source must be a closed EasyEDA polygon source using verified L/ARC commands.');
 		}
-		points.push([p[0], p[1]]);
+		src = [...rawSource] as Array<string | number>;
+		points = parsed.points;
+		outlineFormat = parsed.format ?? 'unknown';
+	}
+	else {
+		if (!Array.isArray(rawPoints) || rawPoints.length < 3) {
+			throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'points must be an array of >= 3 [x,y] pairs (mil).');
+		}
+		points = [];
+		for (const p of rawPoints) {
+			if (!Array.isArray(p) || p.length < 2 || typeof p[0] !== 'number' || !Number.isFinite(p[0])
+				|| typeof p[1] !== 'number' || !Number.isFinite(p[1])) {
+				throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'each point must be [x, y] finite numbers.');
+			}
+			points.push([p[0], p[1]]);
+		}
+		if (points.length > 3 && Math.abs(points[0][0] - points[points.length - 1][0]) <= 1e-6
+			&& Math.abs(points[0][1] - points[points.length - 1][1]) <= 1e-6) points.pop();
+		src = [points[0][0], points[0][1], 'L'];
+		for (let i = 1; i < points.length; i++) src.push(points[i][0], points[i][1]);
+		src.push(points[0][0], points[0][1]);
+		outlineFormat = 'polyline';
 	}
 	const replace = optionalBoolean(payload, 'replace') !== false;
 	const lineWidth = optionalNumber(payload, 'lineWidth') ?? 10;
+	if (!Number.isFinite(lineWidth) || lineWidth <= 0) {
+		throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'lineWidth must be a finite number greater than zero.');
+	}
 
 	try {
 		// THE board outline is ONE `pcb_PrimitivePolyline` (类型=板框) on layer 11 — NOT
@@ -11391,11 +11980,8 @@ const pcbOutlineSet: Handler = async (payload) => {
 		// boundary — DRC ignores it for enclosure, and the UI "清除布线 / clear routing"
 		// deletes it (observed: the whole outline vanished). The polyline IS the board-
 		// outline object (matches a UI-drawn 板框, verified against its IPCB_Polygon).
-		// Build the closed-polygon source [x0,y0,'L',x1,y1,…,x0,y0] (same path format as
-		// pcbPourCreate), then createPolygon → the IPCB_Polygon that create() requires.
-		const src: Array<number | string> = [points[0][0], points[0][1], 'L'];
-		for (let i = 1; i < points.length; i++) src.push(points[i][0], points[i][1]);
-		src.push(points[0][0], points[0][1]);
+		// createPolygon converts the verified source into the IPCB_Polygon that
+		// pcb_PrimitivePolyline.create requires.
 		const poly = eda.pcb_MathPolygon.createPolygon(src as unknown as TPCB_PolygonSourceArray);
 		if (!poly) {
 			throw new ActionError(ErrorCodes.EDA_CALL_FAILED, 'Failed to build outline polygon (createPolygon returned undefined — points must form a valid closed polygon).');
@@ -11404,21 +11990,43 @@ const pcbOutlineSet: Handler = async (payload) => {
 		if (replace) {
 			// Remove any existing outline on layer 11: the proper polyline form AND
 			// legacy individual lines/arcs (older builds drew the outline as lines).
-			try {
-				const oldPl = await eda.pcb_PrimitivePolyline.getAll(undefined, BOARD_OUTLINE_LAYER);
-				if (oldPl.length) await eda.pcb_PrimitivePolyline.delete(oldPl.map(p => p.getState_PrimitiveId()));
-			}
-			catch { /* best-effort */ }
-			try {
-				const oldLines = await eda.pcb_PrimitiveLine.getAll(undefined, BOARD_OUTLINE_LAYER);
-				if (oldLines.length) await eda.pcb_PrimitiveLine.delete(oldLines.map(l => l.getState_PrimitiveId()));
-			}
-			catch { /* best-effort */ }
-			try {
-				const oldArcs = await eda.pcb_PrimitiveArc.getAll(undefined, BOARD_OUTLINE_LAYER);
-				if (oldArcs.length) await eda.pcb_PrimitiveArc.delete(oldArcs.map(a => a.getState_PrimitiveId()));
-			}
-			catch { /* arcs best-effort */ }
+			// Replacement must fail closed: a locked/stale old outline plus a newly
+			// created one is worse than a reported failure because the returned
+			// dimensions would describe only one of several board boundaries.
+			const deleteAndConfirm = async (
+				kind: string,
+				getAll: () => Promise<Array<{ getState_PrimitiveId(): string }>>,
+				remove: (ids: string[]) => Promise<boolean>,
+			) => {
+				const oldIds = (await getAll()).map(item => item.getState_PrimitiveId());
+				if (!oldIds.length) return;
+				const deleted = await remove(oldIds);
+				if (!deleted) {
+					throw new ActionError(ErrorCodes.EDA_CALL_FAILED,
+						`Failed to delete existing board-outline ${kind}; no replacement was created.`);
+				}
+				const remaining = new Set((await getAll()).map(item => item.getState_PrimitiveId()));
+				const residual = oldIds.filter(id => remaining.has(id));
+				if (residual.length) {
+					throw new ActionError(ErrorCodes.INVALID_STATE,
+						`Existing board-outline ${kind} remained after delete (${residual.join(', ')}); no replacement was created.`);
+				}
+			};
+			await deleteAndConfirm(
+				'polylines',
+				() => eda.pcb_PrimitivePolyline.getAll(undefined, BOARD_OUTLINE_LAYER),
+				ids => eda.pcb_PrimitivePolyline.delete(ids),
+			);
+			await deleteAndConfirm(
+				'lines',
+				() => eda.pcb_PrimitiveLine.getAll(undefined, BOARD_OUTLINE_LAYER),
+				ids => eda.pcb_PrimitiveLine.delete(ids),
+			);
+			await deleteAndConfirm(
+				'arcs',
+				() => eda.pcb_PrimitiveArc.getAll(undefined, BOARD_OUTLINE_LAYER),
+				ids => eda.pcb_PrimitiveArc.delete(ids),
+			);
 		}
 
 		// Create the outline polyline LOCKED — a board outline must not move during
@@ -11428,15 +12036,14 @@ const pcbOutlineSet: Handler = async (payload) => {
 			throw new ActionError(ErrorCodes.EDA_CALL_FAILED, 'Board outline creation returned no primitive (check points/layer).');
 		}
 		const outlineId = outline.getState_PrimitiveId();
-		const segments = points.length;
+		const counts = outlineSourceCounts(src);
 
 		let zoomed = false;
 		try { zoomed = await eda.pcb_Document.zoomToBoardOutline(); }
 		catch { /* best-effort */ }
 
-		const xs = points.map(p => p[0]);
-		const ys = points.map(p => p[1]);
-		const bbox = { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+		const bbox = centerlineBounds(points);
+		const radius = roundedRectRadius(src);
 
 		// Best-effort enclosure check: any component whose bbox corner is outside.
 		const outside: Array<string> = [];
@@ -11455,9 +12062,15 @@ const pcbOutlineSet: Handler = async (payload) => {
 		}
 		catch { /* enclosure check is best-effort */ }
 
-		return { result: { outlineId, segments, zoomed, bbox, allInside: outside.length === 0, outside } };
+		return { result: {
+			outlineId, segments: counts.segments, arcs: counts.arcs, zoomed, bbox,
+			width: bbox.maxX - bbox.minX, height: bbox.maxY - bbox.minY, radius,
+			lineWidth: outline.getState_LineWidth(), locked: outline.getState_PrimitiveLock(),
+			outlineFormat, allInside: outside.length === 0, outside,
+		} };
 	}
 	catch (err) {
+		if (err instanceof ActionError) throw err;
 		throw edaError(err, 'Failed to set board outline.');
 	}
 };
@@ -11506,19 +12119,42 @@ const pcbOutlineGet: Handler = async () => {
 	// line, so the points are the truthful board edge.
 	let points: Array<[number, number]> | null = null;
 	let outlineFormat: string | null = null;
+	let centerlineBBox: { minX: number; maxX: number; minY: number; maxY: number } | null = null;
+	let width: number | null = null;
+	let height: number | null = null;
+	let radius: number | null = null;
+	let lineWidth: number | null = null;
+	let locked: boolean | null = null;
+	let sourceSegments: number | null = null;
+	let sourceArcs: number | null = null;
 	if (polylines.length > 0) {
 		try {
 			const sources = polylines.map(p => p.getState_Polygon()?.getSource());
-			const parsed = selectBoardOutlineSources(sources);
-			points = parsed.points;
-			outlineFormat = parsed.format;
+			const selected = selectBoardOutlineSource(sources);
+			points = selected.points;
+			outlineFormat = selected.format;
+			if (points && selected.index >= 0) {
+				centerlineBBox = centerlineBounds(points);
+				width = centerlineBBox.maxX - centerlineBBox.minX;
+				height = centerlineBBox.maxY - centerlineBBox.minY;
+				radius = roundedRectRadius(sources[selected.index]);
+				lineWidth = polylines[selected.index].getState_LineWidth();
+				locked = polylines[selected.index].getState_PrimitiveLock();
+				const sourceCounts = outlineSourceCounts(sources[selected.index] as Array<string | number>);
+				sourceSegments = sourceCounts.segments;
+				sourceArcs = sourceCounts.arcs;
+			}
 		}
 		catch { /* best-effort: callers fall back to the bbox */ }
 	}
 
 	// `outline` = the canonical polyline-based board outline; `segments`/`arcs` keep
 	// reporting legacy line/arc counts so old boards still read sensibly.
-	return { result: { outline: polylines.length, segments: lines.length, arcs: arcCount, bbox, points, outlineFormat } };
+	return { result: {
+		outline: polylines.length, segments: lines.length, arcs: arcCount, legacyArcs: arcCount,
+		sourceSegments, sourceArcs, nativeArcs: sourceArcs, bbox,
+		points, outlineFormat, centerlineBBox, width, height, radius, lineWidth, locked,
+	} };
 };
 
 /**
@@ -11533,9 +12169,9 @@ const pcbOutlineGet: Handler = async () => {
  * commands (`CARC`/`C`/`R`/`CIRCLE`) remain fail-closed until real samples prove
  * their layouts. A wrong boundary is worse than an admitted AABB approximation.
  *
- * Worth noting: `pcb outline-round` does NOT produce arcs. It approximates each
- * rounded corner with a 7-point polyline, so every outline this toolchain creates
- * — rounded ones included — is pure `L` and parses exactly.
+ * `pcb outline-round` emits four verified quarter-circle ARC commands, so the
+ * sampled points here are only for measurement/containment; the stored board
+ * edge remains a native curved path.
  */
 export function polygonSourceToPoints(src: unknown): { points: Array<[number, number]> | null; format: string | null } {
 	if (!Array.isArray(src) || src.length < 6) return { points: null, format: 'empty' };
@@ -11669,20 +12305,26 @@ function ringStrictlyInside(candidate: Array<[number, number]>, outer: Array<[nu
 	return true;
 }
 
-/** Select a proven outer ring from one or more outline-layer polygon sources. */
-export function selectBoardOutlineSources(sources: unknown[]): { points: Array<[number, number]> | null; format: string | null } {
-	if (!Array.isArray(sources) || sources.length === 0) return { points: null, format: 'empty' };
+type SelectedBoardOutlineSource = {
+	points: Array<[number, number]> | null;
+	format: string | null;
+	index: number;
+};
+
+/** Select a proven outer ring and preserve its source index for primitive metadata. */
+function selectBoardOutlineSource(sources: unknown[]): SelectedBoardOutlineSource {
+	if (!Array.isArray(sources) || sources.length === 0) return { points: null, format: 'empty', index: -1 };
 	const parsed = sources.map(polygonSourceToPoints);
 	const failed = parsed.find(result => !result.points);
 	if (failed) {
-		return { points: null, format: sources.length === 1 ? failed.format : `ambiguous:${sources.length}-polylines:${failed.format}` };
+		return { points: null, format: sources.length === 1 ? failed.format : `ambiguous:${sources.length}-polylines:${failed.format}`, index: -1 };
 	}
-	if (parsed.length === 1) return parsed[0];
+	if (parsed.length === 1) return { ...parsed[0], index: 0 };
 
 	const ranked = parsed.map((result, index) => ({ ...result, index, area: polygonArea(result.points!) }))
 		.sort((a, b) => b.area - a.area);
 	if (ranked[0].area <= 1e-9 || Math.abs(ranked[0].area - ranked[1].area) <= 1e-9) {
-		return { points: null, format: `ambiguous:${sources.length}-polylines` };
+		return { points: null, format: `ambiguous:${sources.length}-polylines`, index: -1 };
 	}
 	const outer = ranked[0].points!;
 	// Vertex-only containment is insufficient for a concave outline: two inner
@@ -11690,8 +12332,14 @@ export function selectBoardOutlineSources(sources: unknown[]): { points: Array<[
 	// Require every vertex strictly inside and every candidate edge disjoint from
 	// the outer boundary before claiming a proven containing ring.
 	const containsEveryOtherRing = ranked.slice(1).every(candidate => ringStrictlyInside(candidate.points!, outer));
-	if (!containsEveryOtherRing) return { points: null, format: `ambiguous:${sources.length}-polylines` };
-	return { points: outer, format: `${ranked[0].format};outer-of:${sources.length}` };
+	if (!containsEveryOtherRing) return { points: null, format: `ambiguous:${sources.length}-polylines`, index: -1 };
+	return { points: outer, format: `${ranked[0].format};outer-of:${sources.length}`, index: ranked[0].index };
+}
+
+/** Select a proven outer ring from one or more outline-layer polygon sources. */
+export function selectBoardOutlineSources(sources: unknown[]): { points: Array<[number, number]> | null; format: string | null } {
+	const { points, format } = selectBoardOutlineSource(sources);
+	return { points, format };
 }
 
 /** Remove the current board outline (all primitives on the BOARD_OUTLINE layer). */
@@ -11721,6 +12369,64 @@ const pcbOutlineClear: Handler = async () => {
 	}
 	catch { /* best-effort */ }
 	return { result: { removed } };
+};
+
+// ─── PCB canvas origin (display coordinates only) ─────────────────────
+
+const pcbOriginGet: Handler = async () => {
+	try {
+		const origin = await eda.pcb_Document.getCanvasOrigin();
+		if (!origin || !Number.isFinite(origin.offsetX) || !Number.isFinite(origin.offsetY)) {
+			throw new ActionError(ErrorCodes.EDA_CALL_FAILED, 'PCB canvas origin returned invalid offsets.');
+		}
+		return { result: {
+			offsetX: origin.offsetX,
+			offsetY: origin.offsetY,
+			affectsGeometry: false,
+			note: 'Display/canvas origin only; PCB data coordinates and primitive geometry are unchanged.',
+		} };
+	}
+	catch (err) {
+		if (err instanceof ActionError) throw err;
+		throw edaError(err, 'Failed to read the PCB canvas origin.');
+	}
+};
+
+const pcbOriginSet: Handler = async (payload) => {
+	const offsetX = requireNumber(payload, 'offsetX');
+	const offsetY = requireNumber(payload, 'offsetY');
+	if (!Number.isFinite(offsetX) || !Number.isFinite(offsetY)) {
+		throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'offsetX and offsetY must be finite numbers in mil.');
+	}
+	try {
+		const before = await eda.pcb_Document.getCanvasOrigin();
+		const applied = await eda.pcb_Document.setCanvasOrigin(offsetX, offsetY);
+		if (!applied) {
+			throw new ActionError(ErrorCodes.EDA_CALL_FAILED, 'setCanvasOrigin returned false; the display origin was not confirmed.');
+		}
+		const after = await eda.pcb_Document.getCanvasOrigin();
+		const verified = !!after
+			&& Number.isFinite(after.offsetX) && Number.isFinite(after.offsetY)
+			&& Math.abs(after.offsetX - offsetX) <= 1e-6
+			&& Math.abs(after.offsetY - offsetY) <= 1e-6;
+		if (!verified) {
+			throw new ActionError(ErrorCodes.EDA_CALL_FAILED,
+				`Canvas origin readback mismatch: requested (${offsetX}, ${offsetY}), got (${String(after?.offsetX)}, ${String(after?.offsetY)}).`);
+		}
+		return { result: {
+			offsetX: after.offsetX,
+			offsetY: after.offsetY,
+			previous: before ?? null,
+			changed: !before || before.offsetX !== after.offsetX || before.offsetY !== after.offsetY,
+			verified: true,
+			affectsGeometry: false,
+			note: 'Display/canvas origin changed; PCB data coordinates and primitive geometry were not moved.',
+		} };
+	}
+	catch (err) {
+		if (err instanceof ActionError) throw err;
+		throw edaError(err, 'Failed to set the PCB canvas origin.');
+	}
 };
 
 // ─── View (editor canvas) ────────────────────────────────────────────
@@ -11859,6 +12565,7 @@ const debugExecJs: Handler = async (payload) => {
 
 const HANDLERS: Record<string, Handler> = {
 	'project.current': projectCurrent,
+	'project.create': projectCreate,
 	'document.current': documentCurrent,
 	'document.open': documentOpen,
 	'view.fit': viewFit,
@@ -11902,6 +12609,7 @@ const HANDLERS: Record<string, Handler> = {
 	'library.footprint.copy': libraryFootprintCopy,
 	'library.footprint.delete': libraryFootprintDelete,
 	'library.footprint.build': libraryFootprintBuild,
+	'library.footprint.region_create': libraryFootprintRegionCreate,
 	'library.symbol.create': librarySymbolCreate,
 	'library.symbol.build': librarySymbolBuild,
 	'library.symbol.get': librarySymbolGet,
@@ -11935,6 +12643,8 @@ const HANDLERS: Record<string, Handler> = {
 	'pcb.silk.netnames': pcbSilkNetnames,
 	'pcb.silk.label_pads': pcbSilkLabelPads,
 	'pcb.nets.list': pcbNetsList,
+	'pcb.net_class.list': pcbNetClassList,
+	'pcb.net_class.create': pcbNetClassCreate,
 	'pcb.report': pcbReport,
 	'pcb.constraint.list': pcbConstraintList,
 	'pcb.differential_pair.create': pcbDiffPairCreate,
@@ -11967,6 +12677,7 @@ const HANDLERS: Record<string, Handler> = {
 	'pcb.components.arrange': pcbComponentsArrange,
 	'pcb.drc.check': pcbDrcCheck,
 	'pcb.drc.rules': pcbDrcRules,
+	'pcb.drc.rules.set': pcbDrcRulesSet,
 	'pcb.line.create': pcbLineCreate,
 	'pcb.via.create': pcbViaCreate,
 	'pcb.line.list': pcbLineList,
@@ -11994,6 +12705,8 @@ const HANDLERS: Record<string, Handler> = {
 	'pcb.outline.set': pcbOutlineSet,
 	'pcb.outline.get': pcbOutlineGet,
 	'pcb.outline.clear': pcbOutlineClear,
+	'pcb.origin.get': pcbOriginGet,
+	'pcb.origin.set': pcbOriginSet,
 	'debug.exec_js': debugExecJs,
 };
 

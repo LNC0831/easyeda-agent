@@ -146,23 +146,10 @@ func runRefineLoop(cfg *appConfig, window string, s0 *spec.Spec, opts refineOpts
 		return rep, nil
 	}
 
-	// 不可动集合：锁定件 + 已签字的 tier-1/2。tier 数据读不到时（没跑过 stage）
-	// 只保护锁定件，并在报告里说明——这是降级不是失败。
-	tiers := map[int][]string{}
-	if project, perr := resolveStageProject(cfg, window); perr == nil {
-		if st, serr := loadPcbStageState(project); serr == nil {
-			for n := 1; n <= workflowTierCount; n++ {
-				if tc := st.Tier(n); tc != nil {
-					tiers[n] = tc.Designators
-				}
-			}
-		}
-	}
-	if len(tiers) == 0 {
-		rep.Warnings = append(rep.Warnings,
-			"no confirmed placement tiers found — only editor-locked parts are protected. Run `pcb stage confirm-tier` first so mounting holes and user-confirmed edge connectors are off-limits too")
-	}
-	immovable, immovableList := buildImmovableSet(snap, tiers, opts.IncludeLocked)
+	// Only the editor's live lock flag controls whether refine may move a part.
+	// Legacy workflow/tier records remain readable history, but are not execution
+	// permissions and therefore cannot silently freeze parts in this command.
+	immovable, immovableList := buildImmovableSet(snap, opts.IncludeLocked)
 	rep.Immovable = len(immovableList)
 
 	scoreOpts := layoutScoreOpts{gridMil: gridMil}
@@ -233,13 +220,8 @@ func runRefineLoop(cfg *appConfig, window string, s0 *spec.Spec, opts refineOpts
 			break
 		}
 
-		// 复核：重新拉快照 + 打分 + 数 finding。
-		//
-		// 写后回读放行(stale_read_optin.go)。这是本仓里被 STALE_READ 门伤得最重的
-		// 一处:上一行的 applyRefineMoves 刚发了一批 component.modify,门就关上了;
-		// 而这里读的**正是刚被挪动的那批件**。不放行 → ferr 非空 → 每一步都走
-		// 「post-step re-read failed → 保守回滚」→ `pcb refine --apply` 变成一条
-		// 必然报失败的空转命令。放行位就地生成,只覆盖这一次快照。
+		// 复核：重新拉快照 + 打分 + 数 finding。当前 daemon 会返回 staleRisk
+		// 提示而不拒绝；本轮判断读取刚被移动的对象，最终交付另做 save/reload/readback。
 		newSnap, ferr := fetchBoardSnapshot(
 			staleReadOptIn(cfg, refineReadReason("变换后重新拉板面快照")),
 			window, boardSnapshotOpts{withSilk: true, withRules: true, withLayers: true})
@@ -326,10 +308,7 @@ func planStepFor(d scoreDimension, snap *boardSnapshot, immovable map[string]str
 // **它自己可能制造的**问题负责，不该被板上早已存在的告警绑架。
 // 读失败返回 -1，调用方视作"无法复核"并保守回滚。
 //
-// afterWrite 是写后回读放行理由(stale_read_optin.go)。精修环里这两次计数一次跟在
-// 上一轮的 modify 之后、一次跟在本轮的 modify 之后 —— 都在 STALE_READ 门后面。
-// 一旦被拦,返回值是 -1,而 -1 会触发「无法复核 → 保守回滚」,于是**门本身**变成了
-// 让每一步都回滚的原因。留空 = 不放行(第一轮的基线读用得上)。
+// afterWrite 是保留的调用上下文文字；当前 daemon 不再要求写后回读放行。
 func countGateableFindings(cfg *appConfig, window, afterWrite string, stderr io.Writer) int {
 	rep, err := gatherPcbCheckReport(staleReadOptIn(cfg, afterWrite), window, 0, nil, stderr)
 	if err != nil || rep == nil {

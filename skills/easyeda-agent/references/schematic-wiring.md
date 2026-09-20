@@ -7,9 +7,9 @@
 
 ## Pin-aware autoconnect — let the planner pick direction/offset
 
-从 1.5.0-dev.3 起，写线/接标记的 daemon 执行路径另有不可选的引脚方向与穿本体硬门，
-自动写前检查及写后回读，不因省略 `--strict` 而关闭。以下候选评分负责寻找合法形态，
-不能替代或绕过执行门。已有连通不证明布局合法；详见 schematic.md 的强制执行检查。
+写线/接标记的 daemon 执行路径会校验引脚方向、零长/斜线和穿本体等非法输入，并做写后回读。
+以下候选评分负责寻找合法形态，不能替代这些正确性检查。已有连通不证明布局合法；详见
+schematic.md 的 typed 写入校验。
 
 `connect_pin` (`sch connect`) keeps the connection **safe** (pin → short wire →
 flag/netport, never a netflag on a bare pin), but it still makes YOU pick

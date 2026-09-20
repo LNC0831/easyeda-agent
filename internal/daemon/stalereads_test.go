@@ -24,6 +24,12 @@ func runStale(g *staleGuard, action, windowID string, ok bool, payload map[strin
 	return resp
 }
 
+func runStaleResult(g *staleGuard, action, windowID string, ok bool, payload, result map[string]any) *protocol.Response {
+	resp := &protocol.Response{OK: ok, Result: result}
+	g.observe(staleReq(action, windowID, payload), resp)
+	return resp
+}
+
 func TestStaleGuard_MutationThenReadWarns(t *testing.T) {
 	g := newStaleGuard()
 	runStale(g, "pcb.route.rip_up", "w1", true, nil)
@@ -49,12 +55,26 @@ func TestStaleGuard_ReloadClears(t *testing.T) {
 
 	// `doc reload` is a CLI composite; its daemon-visible discriminator is the
 	// debug.exec_js closeDocument step (a doc switch/document.open must NOT clear).
-	runStale(g, "debug.exec_js", "w1", true, map[string]any{
+	runStaleResult(g, "debug.exec_js", "w1", true, map[string]any{
 		"code": `return await eda.dmt_EditorControl.closeDocument("tab-1")`,
-	})
+	}, map[string]any{"value": map[string]any{"closed": true}})
 
 	if resp := runStale(g, "pcb.drc.check", "w1", true, nil); resp.StaleRisk != "" {
 		t.Errorf("read after reload: want no staleRisk, got %q", resp.StaleRisk)
+	}
+}
+
+func TestStaleGuard_FailedCloseDoesNotClear(t *testing.T) {
+	g := newStaleGuard()
+	runStale(g, "pcb.via.create", "w1", true, nil)
+
+	// debug.exec_js itself completed, but the host refused to close the tab.
+	runStaleResult(g, "debug.exec_js", "w1", true, map[string]any{
+		"code": `const closed = await eda.dmt_EditorControl.closeDocument("tab-1"); return {closed};`,
+	}, map[string]any{"value": map[string]any{"closed": false}})
+
+	if resp := runStale(g, "pcb.drc.check", "w1", true, nil); resp.StaleRisk == "" {
+		t.Error("closeDocument returning false must preserve the stale mark")
 	}
 }
 
@@ -141,6 +161,27 @@ func TestStaleGuard_MutatingActionsNotAnnotated(t *testing.T) {
 	}
 }
 
+func TestStaleGuard_OriginMetadataIsIndependentOfGeometryStaleness(t *testing.T) {
+	g := newStaleGuard()
+	runStale(g, "pcb.route.rip_up", "w1", true, nil)
+
+	if resp := runStale(g, "pcb.origin.get", "w1", true, nil); resp.StaleRisk != "" {
+		t.Errorf("origin metadata read must not inherit geometry staleRisk, got %q", resp.StaleRisk)
+	}
+	// Setting the origin persists editor metadata, so it is catalogued Mutates=true,
+	// but it neither marks geometry stale nor clears a pre-existing geometry mark.
+	runStale(g, "pcb.origin.set", "w1", true, map[string]any{"offsetX": 0.0, "offsetY": 0.0})
+	if resp := runStale(g, "pcb.drc.check", "w1", true, nil); resp.StaleRisk == "" {
+		t.Error("origin.set must not clear an existing geometry stale mark")
+	}
+
+	fresh := newStaleGuard()
+	runStale(fresh, "pcb.origin.set", "w2", true, map[string]any{"offsetX": 0.0, "offsetY": 0.0})
+	if resp := runStale(fresh, "pcb.drc.check", "w2", true, nil); resp.StaleRisk != "" {
+		t.Errorf("origin.set must not mark PCB geometry stale, got %q", resp.StaleRisk)
+	}
+}
+
 // TestStaleGuard_CatalogClassification pins the catalog-driven classification
 // for the load-bearing copper mutations named by iron rule 5.
 func TestStaleGuard_CatalogClassification(t *testing.T) {
@@ -156,6 +197,7 @@ func TestStaleGuard_CatalogClassification(t *testing.T) {
 	}
 	noMarks := []string{
 		"pcb.save", "pcb.pour.rebuild", // exempt
+		"pcb.origin.set",                 // editor metadata only
 		"pcb.line.list", "pcb.drc.check", // reads
 		"schematic.wire.create", "document.open", // other domains
 	}
@@ -172,6 +214,9 @@ func TestStaleGuard_CatalogClassification(t *testing.T) {
 	}
 	if pcbStaleRead(staleReq("schematic.components.list", "w1", nil)) {
 		t.Error("schematic reads must not be classified as PCB stale reads")
+	}
+	if pcbStaleRead(staleReq("pcb.origin.get", "w1", nil)) {
+		t.Error("origin metadata must not be classified as a geometry stale read")
 	}
 }
 
