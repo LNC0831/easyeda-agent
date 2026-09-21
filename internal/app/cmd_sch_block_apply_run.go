@@ -863,6 +863,25 @@ func runBlockApply(cfg *appConfig, window, blockID string, in bapInput, partsPat
 		fmt.Fprintf(stderr, "warn: %s\n", w)
 	}
 
+	// -- 落块前的器件解析门 --
+	//
+	// 位置与上面的「这一页放不下」同族:**任何 mutating action 之前**。一份对错
+	// 站点的 standard-parts.json 会让每一个 place 都失败,而从前是一次发现一个 ——
+	// 第一个 place 炸掉、进收编/回滚、报告只点名一个 role,可补救的动作
+	// (`lib by-lcsc` 重解析整份库)却是整份的。先扫一遍就能一次列全,而且画布
+	// 零改动,没有东西需要回滚。
+	//
+	// library.device.get 是读动作,所以 --dry-run 下同样会跑(dry-run 纯度门只拒
+	// Mutates);离线 dry-run(没有 window 也没有 --project)够不到连接器,跳过。
+	if !in.SkipDevicePreflight && (!dryRun || window != "" || cfg.project != "") {
+		if devices := bapPlanDevices(plan.Placements); len(devices) > 0 {
+			if bad := bapPreflightDevices(cfg, window, devices); len(bad) > 0 {
+				return bapUnresolvedDevicesError(bad, len(devices), partsPath)
+			}
+			bapReportPreflightOK(stderr, len(devices))
+		}
+	}
+
 	man := bapManifest{
 		OK: "planned", BlockID: plan.BlockID, Revision: plan.Revision,
 		BlockState: b.Status(), Instance: plan.Instance, Origin: plan.Origin,
@@ -1372,6 +1391,7 @@ func newSchBlockApplyCmd(cfg *appConfig, window *string, stdout, stderr io.Write
 		spacing                 float64
 		perRow, maxAttempts     int
 		dryRun, asJSON          bool
+		skipDevicePreflight     bool
 	)
 	c := &cobra.Command{
 		Use:   "block-apply <block-id>",
@@ -1462,7 +1482,8 @@ idempotent per pin — an already-connected pin is skipped rather than re-flagge
 			in := bapInput{
 				Instance: instance, OriginX: x, OriginY: y,
 				Spacing: spacing, PerRow: perRow, Bind: bind, KindOver: kindOver, SpecPath: specPath,
-				AtExplicit: cmd.Flags().Changed("at"),
+				AtExplicit:          cmd.Flags().Changed("at"),
+				SkipDevicePreflight: skipDevicePreflight,
 			}
 			return runBlockApply(cfg, *window, args[0], in, partsPath, dryRun, asJSON, maxAttempts, stdout, stderr)
 		},
@@ -1480,6 +1501,9 @@ idempotent per pin — an already-connected pin is skipped rather than re-flagge
 		"(平台会在 create 时重编位号,spec 里的旧位号会让分区判据静默少算模块;等价于事后跑 easyeda spec backfill --write)")
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "plan and print without placing or wiring")
 	c.Flags().BoolVar(&asJSON, "json", false, "emit the instance manifest as JSON")
+	c.Flags().BoolVar(&skipDevicePreflight, "skip-device-preflight", false,
+		"不要在落块前逐个确认器件在本站点库里解析得到。默认会确认:一份对错站点解析的 "+
+			"standard-parts.json 会让每一个 place 都失败,先扫一遍可以在画布零改动的前提下一次列全")
 	c.Flags().IntVar(&maxAttempts, "max-attempts", schConvergeDefaultMaxAttempts,
 		"同一个块在同一页连续得到同一个失败结果多少次之后停手并给结论(0 = 不限)。"+
 			"结果签名一变(重叠数变了、换了落点)就重新计数,所以真有进展永远撞不到上限")
