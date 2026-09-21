@@ -799,12 +799,20 @@ func runBlockApply(cfg *appConfig, window, blockID string, in bapInput, partsPat
 	// 台账按它分文件(而不是裸 cfg.project —— `--window` 路由时那是空串,所有
 	// 匿名工程会共用 `_active.json` 一个桶),spec 回填也按它的 uuid 收窄跨页组表。
 	ident := schPageIdentity{Project: strings.TrimSpace(cfg.project)}
+	// 没读页的 dry-run 是**对着空页**规划的:每个位号都看着空闲,原点谁也不避。
+	// 实测 `--dry-run` 不带 --project 时,在一张已经有 LED1/R1 且 400,300 压着
+	// 器件的页上,照样报出 `[ready] instance=LED1`、LED1/R1 @ 400,300 —— 正是
+	// issue #136 说的「跨页位号撞车会毒掉整张网表的归属」,却以干净计划的样子
+	// 出现。两条「没读到页」的路径现在都要说出来,而且要进 manifest:只写
+	// stderr 的话,`--json` 的消费者读到的仍然是一份全绿的计划。
+	var pageReadNotes []string
 	if !dryRun || window != "" || cfg.project != "" {
 		if in.Existing, pageUUID, ident, err = existingDesignators(cfg, window); err != nil {
 			if !dryRun {
 				return err
 			}
-			fmt.Fprintf(stderr, "warn: could not read the page (%v) — planning against an empty page\n", err)
+			pageReadNotes = append(pageReadNotes, fmt.Sprintf(
+				"could not read the page (%v) — planned against an EMPTY page: designators and origin were NOT checked against the sheet", err))
 			in.Existing = map[string]bool{}
 		}
 		if ident.Project == "" {
@@ -820,6 +828,10 @@ func runBlockApply(cfg *appConfig, window, blockID string, in bapInput, partsPat
 		// findSlot 的 inBounds 传成 nil,于是"最近的空位"可以落在图纸外
 		// (实测 J_USB→x=-20、R6→y=880 而图纸上界 825)。issue #180 Fix B。
 		in.Sheet = sheetBBox
+	} else {
+		pageReadNotes = append(pageReadNotes,
+			"no --project/--window: planned against an EMPTY page — designators and origin were NOT checked "+
+				"against the sheet. Re-run with --project <name|uuid> for a plan that matches the real page.")
 	}
 
 	// ── 次数上限 + 落块前的「这一页根本放不下」停手(#181 第三份复盘,最大卡点)──
@@ -851,6 +863,8 @@ func runBlockApply(cfg *appConfig, window, blockID string, in bapInput, partsPat
 	if err != nil {
 		return err
 	}
+	// 前置:没读到页这件事比任何规划警告都更能决定整份计划算不算数。
+	plan.Warnings = append(append([]string(nil), pageReadNotes...), plan.Warnings...)
 	// 出图纸的判定统一走**放置后的实测 bbox**(verifyBlockLayout → detectOutOfSheet),
 	// 不再在这里拿规划坐标的**锚点**比 sheet:锚点在框内而 body 探出框外就漏报 ——
 	// 2026-08-13 实测,同一次 apply 锚点判据只报 LED2,bbox 判据报 LED2+R8。
