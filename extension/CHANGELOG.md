@@ -3,9 +3,13 @@
 ## [Unreleased]
 
 - Bootstrap the Connector when EasyEDA evaluates its entry bundle without dispatching `activate()`. Keep one versioned transport controller on the host's shared per-extension `eda` object so repeated bundle evaluations delegate `start`, `stop`, `reconnect`, and status reads instead of registering duplicate sockets. `deactivate()` stops and releases that controller for a subsequent reload. Verified on macOS EasyEDA 3.2.203 with an official 1.5.2 cold-start baseline that did not connect, followed by import-time and fresh-process bootstrap registrations where `activateObserved=false`; this does not establish the behavior of Windows 3.2.149 or a startup path that never evaluates the bundle.
+- Gate on netlist availability, not just pin geometry. `pinsAvailable` proves the PIN API read succeeded; it says nothing about whether the netlist that every pin's `net` comes from was fetched. A muted export leaves every pin's `net` null while `pinsAvailable` stays true, so a downstream reader could not tell "this pin has no net" from "no net could be read". `sch block-apply`'s layout proof and `sch designators plan` now require `netlistAvailable` and report the netlist as the cause when it is missing.
+- Surface the same distinction in `sch layout-lint`: parts whose geometry is proven but whose pin-to-net attribution is not are reported as a separate `nets-unproven` category (new `netsUnproven` field, its own strict-gate reason and summary column) instead of being conflated with the legacy-connector `unprovenPins` bucket, which would send the reader to a different fix.
+- Skill: `sch read.floatingPins` may only be recorded as `connectionState:"unconnected"` when `sch read.netlistAvailable` is true — with a muted netlist every pin lands in that list, so it states a failed read rather than an unconnected design.
 
 ## [1.5.3-dev.3] — 2026-09-20 (local development)
 
+- Add `install.ps1` for native Windows (Windows PowerShell 5.1 and PowerShell 7), usable as `irm .../install.ps1 | iex`. It mirrors `install.sh`: the same `EASYEDA_VERSION` / `EASYEDA_INSTALL_DIR` / `EASYEDA_INSTALL_SKILLS` / `EASYEDA_SKILL_PRESERVE` / `CODEX_HOME` / `CLAUDE_CONFIG_DIR` / GitHub-token / mirror knobs, `checksums.txt` fetched from GitHub before any mirror fallback is allowed, SHA-256 plus CLI `--version` plus Skill `metadata.version` verified before an installed file is touched, and the same stage-then-swap Skill replace with backup/restore and `.version` marker. Windows-specific: a running `easyeda.exe` is renamed aside so a locked upgrade still completes, and the user PATH is changed only on explicit request while the machine PATH is never touched. `install.sh` now points Windows users at it, and releases publish `install.ps1` next to `install.sh` with a checksum.
 - Make `pcb stackup set` read back copper count and every requested inner-layer type. Rejected layer writes now return unverified/partial evidence and a non-zero CLI status instead of a false success; repeated matching requests are no-op verified.
 - Accept only relative IEEE roundoff in PCB rule write/readback and idempotence; keep exact source-drift checks and reject missing fields, unit changes and real value differences. Found on Web 3.2.203 during live clearance write.
 - Add typed `pcb.net.color.set` and `pcb config net-color` with hex RGB input, preserved alpha, dry-run and strict readback failure reporting.
@@ -603,7 +607,7 @@ setTimeout 的守卫(FIFO 的放弃闸 22s、每次平台调用的 `withTimeout`
 ### Known issues — 随版本如实公布
 
 一次广度优先的端到端(esp32Mini 固定用例)记了 19 条挂账,完整台账见仓库
-`docs/e2e-round-2026-08-25-findings.md`。**升级前值得先知道的三条**:
+`docs/reviews/e2e-round-2026-08-25-findings.md`。**升级前值得先知道的三条**:
 
 - **`sch group-move --ids` 报「电气自检失败」却不回滚**:位移照样落地,留下悬空脚 +
   悬空树。看到那个 `✗` **不要当作没发生**,先 `sch bridge-check` 复核画布。
@@ -1063,7 +1067,7 @@ sheet 符号引用,重启后图框丢失 —— 修复处方见 skill actions.md
   阵亡)。现按段拆成 N 次单段 create(平台自行再合并),0 长度填充段跳过,
   分段失败报出已建段数。
 
-### Added(CLI 侧,三层布局体系 —— docs/schematic-layout-hierarchy.md)
+### Added(CLI 侧,三层布局体系 —— docs/cli/schematic.md)
 - **`sch group tidy`** 组内布局计算:双电源旗电容自动竖放+上电下地+文字朝外
   (真机校准 rotation 表:power up=0/gnd down=0);实测 pin 旋转二义消解、
   stale 双读防线、未建模第三连接拒绝(3-pin 馈通不被扯断)、disconnect 连带
@@ -1964,7 +1968,7 @@ hopFeasible 硬门(R2 两条真交叉短路的根治),mount-holes 反查既有�
   (共 23 块:20 ready / 3 draft)。
 - **`pcb.components.list --include-pads` 返回焊盘真实铜皮 `width`/`height`**、
   **`pcb.silk.list` 返回 `fontSize`**(0.12.1 起):clearance/DFM/避障从名义常量升级实测值。
-- **PCB 设计规范手册**(`skills/easyeda-agent/references/pcb-design-rules.md`):13 章,
+- **PCB 设计规范手册**(`.agents/skills/easyeda-agent/references/pcb-design-rules.md`):13 章,
   JLC 工艺 + IPC-2221;`pcb check` 报错的 `[规范 §N]` 即指向此手册章节。
 - **`sch bridge-check` 规则类型化**:`wire-bridge`(ERROR)/`orphan-stub`(WARN),
   JSON 可按类型 gate,对齐 `pcb check` 强制力。
@@ -2163,7 +2167,7 @@ P8 铺铜/出 Gerber 之前)。
 - `references/design-flow.md` 新增 **P7.9 走线美化档**(dry-run 先行 + 上游告警清单:
   焊盘-走线连接需人工复核、RF/高速网排除全局美化、出 Gerber 前预览);
   `references/pcb.md` 加 `pcb beautify` 命令条目;`docs/ecosystem-survey.md` /
-  `docs/marketplace-coverage.md` absorb-list 标记已吸收(#1c)。
+  `docs/reviews/2026-07-marketplace-coverage.md` absorb-list 标记已吸收(#1c)。
 - **署名**:新增仓库根 `NOTICE`,记录 Apache-2.0 第三方来源、原作者 m-RNA、逐文件
   映射与相对上游的改动;几何文件头保留出处注释。
 
@@ -2472,7 +2476,7 @@ UX fix. (Consolidates the dev-loop releases 0.6.1–0.6.7 below.)
 ### Docs
 - README split into a Chinese homepage (`README.md`) + English (`README.en.md`); new demo
   recording storyboard `docs/demo-storyboard-esp32-mini.md`; FEATURES action count 85→88;
-  official-marketplace coverage survey (`docs/marketplace-coverage.md`).
+  official-marketplace coverage survey (`docs/reviews/2026-07-marketplace-coverage.md`).
 
 ## [0.6.7] - 2026-07-02
 ### Fixed

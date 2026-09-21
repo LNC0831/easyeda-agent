@@ -3513,7 +3513,8 @@ const schematicCheck: Handler = async (payload) => {
 	const wireEndpoints: Array<{ x: number; y: number }> = [];
 	for (const s of segs) {
 		wireEndpoints.push({ x: s[0], y: s[1] }, { x: s[2], y: s[3] });
-	}	const COINCIDE_TOL = CHECK_EPS * 8;
+	}
+	const COINCIDE_TOL = CHECK_EPS * 8;
 	const coincidesWithAnchor = (x: number, y: number): boolean =>
 		connectionMarkers.some(m => Math.hypot(x - m.x, y - m.y) <= COINCIDE_TOL)
 		|| wireEndpoints.some(e => Math.hypot(x - e.x, y - e.y) <= COINCIDE_TOL);
@@ -5408,7 +5409,7 @@ export async function getComponentOrThrow(primitiveId: string): Promise<SchCompo
  *
  * WHY delete-then-create (not a plain modify): `sch_PrimitiveComponent.modify` cannot
  * change the symbol/footprint reference of an already-placed instance (see
- * marketplace-coverage.md:64). The reference lives on the DEVICE-library record, so we:
+ * docs/reviews/2026-07-marketplace-coverage.md). The reference lives on the DEVICE-library record, so we:
  *   1. resolve the device's real library UUID (imported devices carry an empty one),
  *   2. `lib_Device.modify` the device association to the new footprint/symbol,
  *   3. `delete` the stale placed instance,

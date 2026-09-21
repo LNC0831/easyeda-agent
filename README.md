@@ -54,7 +54,7 @@
 
 这个流程使用 `easyeda lib device validate --spec …` 在打开或修改 EasyEDA 前检查数据手册
 证据、几何和引脚映射，再由 `lib device build` 创建完整资产。规格契约见
-[数据手册驱动的自动建库](skills/easyeda-agent/references/library-authoring.md)。
+[数据手册驱动的自动建库](.agents/skills/easyeda-agent/references/library-authoring.md)。
 
 ### 做一块 ESP32 最小系统板
 
@@ -142,11 +142,28 @@ easyeda-agent 由三部分组成：`easyeda` CLI/daemon、运行在 EasyEDA 内�
 
 ### 1. 安装 CLI 和 Skill
 
+macOS / Linux：
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zhoushoujianwork/easyeda-agent/main/install.sh | bash
 ```
 
-安装器会识别 Codex、Codex Desktop 和 Claude Code，并打印连接器下载地址。
+原生 Windows（Windows PowerShell 5.1 或 PowerShell 7）：
+
+```powershell
+irm https://raw.githubusercontent.com/zhoushoujianwork/easyeda-agent/main/install.ps1 | iex
+```
+
+两个脚本行为一致：先取 `checksums.txt`，全部资产校验 SHA-256、核对 CLI `--version`
+与 Skill `metadata.version` 之后才替换已安装文件；环境变量 `EASYEDA_VERSION`、
+`EASYEDA_INSTALL_DIR`、`EASYEDA_INSTALL_SKILLS`、`EASYEDA_SKILL_PRESERVE`、
+`EASYEDA_GITHUB_PROXY` 同样生效。安装器会识别 Codex、Codex Desktop 和 Claude Code，
+并打印连接器下载地址。
+
+install.ps1 默认装到 `%USERPROFILE%\.local\bin`，不会自作主张改 PATH：目录不在用户
+PATH 上时只打印添加命令，需要自动添加用 `-AddToPath`（下载成文件运行）或
+`$env:EASYEDA_ADD_TO_PATH=1`（管道运行）；机器级 PATH 始终不动。手工安装步骤见
+[快速开始](docs/quick-start.md)。
 
 ### 2. 安装连接器
 
@@ -206,16 +223,16 @@ EasyEDA Pro project
 - 受控阻抗所需的介质厚度、Er 和铜厚无法从当前 `eda.*` API 完整读取，不能自动声称阻抗合格。
 - PDF 自动建库仍以具体型号和原厂证据为准；扫描模糊、封装后缀不明或缺少焊盘依据时会暂停询问。
 
-完整边界和路线图见 [市场能力覆盖](docs/marketplace-coverage.md) 与
-[功能清单](docs/FEATURES.md)。
+当前能力与边界见 [功能清单](docs/FEATURES.md) 和 [CLI 索引](docs/cli/README.md)。
+过往调研和实测结果集中在 [历史证据索引](docs/reviews/README.md)。
 
 ## 开发与贡献
 
 - 文档导航与信息归属：[docs/README.md](docs/README.md)
 - 跨项目查询、维护 Skill 和多客户端兼容：[Agent 协作设计](docs/agent-collaboration.md)
 - 开发环境：[docs/dev-environment.md](docs/dev-environment.md)
-- 电路块贡献：[standard-blocks-contributing.md](skills/easyeda-agent/references/standard-blocks-contributing.md)
-- Skill 入口：[skills/easyeda-agent/SKILL.md](skills/easyeda-agent/SKILL.md)
+- 电路块贡献：[standard-blocks-contributing.md](.agents/skills/easyeda-agent/references/standard-blocks-contributing.md)
+- Skill 入口：[.agents/skills/easyeda-agent/SKILL.md](.agents/skills/easyeda-agent/SKILL.md)
 - 仓库结构与开发约定：[AGENTS.md](AGENTS.md)
 
 感谢嘉立创 EDA 专业版开放扩展接口，也感谢
