@@ -41,6 +41,15 @@ metadata:
    `incomplete`；先修复 typed reload/open 能力再复测。报告事实级检查结果和未覆盖项，不用
    阶段签字或综合评分代替判断。
 
+## MCP 新建工程的定位
+
+从首页调用 MCP `project.create` 时，先通过 `easyeda_health` 选择真实窗口，把新名称放在
+`payload.friendlyName`，可用 `payload.open` 请求打开。此动作只创建工程容器，必须提供
+`window`，不要传 `project` 或 `doc`；拟建名称不是已有工程，首页标签不是原理图页面。
+创建后检查 `created` / `opened` / `partial` 并读回工程身份，再处理文档创建。部分成功时
+先查状态，不盲目重复创建。返回 `UNKNOWN_ACTION` 时检查连接器是否实现此动作；健康检查的
+版本兼容不能证明 handler 存在。其他 MCP 写操作仍要求真实 `project` 和 `doc`；不得推广此例外。
+
 ## 按任务加载
 
 | 任务 | 读取 |
