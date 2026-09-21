@@ -9,6 +9,7 @@
 
 ## [1.5.3-dev.3] — 2026-09-20 (local development)
 
+- Add `install.ps1` for native Windows (Windows PowerShell 5.1 and PowerShell 7), usable as `irm .../install.ps1 | iex`. It mirrors `install.sh`: the same `EASYEDA_VERSION` / `EASYEDA_INSTALL_DIR` / `EASYEDA_INSTALL_SKILLS` / `EASYEDA_SKILL_PRESERVE` / `CODEX_HOME` / `CLAUDE_CONFIG_DIR` / GitHub-token / mirror knobs, `checksums.txt` fetched from GitHub before any mirror fallback is allowed, SHA-256 plus CLI `--version` plus Skill `metadata.version` verified before an installed file is touched, and the same stage-then-swap Skill replace with backup/restore and `.version` marker. Windows-specific: a running `easyeda.exe` is renamed aside so a locked upgrade still completes, and the user PATH is changed only on explicit request while the machine PATH is never touched. `install.sh` now points Windows users at it, and releases publish `install.ps1` next to `install.sh` with a checksum.
 - Make `pcb stackup set` read back copper count and every requested inner-layer type. Rejected layer writes now return unverified/partial evidence and a non-zero CLI status instead of a false success; repeated matching requests are no-op verified.
 - Accept only relative IEEE roundoff in PCB rule write/readback and idempotence; keep exact source-drift checks and reject missing fields, unit changes and real value differences. Found on Web 3.2.203 during live clearance write.
 - Add typed `pcb.net.color.set` and `pcb config net-color` with hex RGB input, preserved alpha, dry-run and strict readback failure reporting.
