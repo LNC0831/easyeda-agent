@@ -38,6 +38,7 @@ jobs:
           make lint-test
           make modules-audit
           make release-script-test
+          make agent-check
           make skill-check
           npx --yes skills-ref@latest validate skills/easyeda-agent
       - name: Test and build connector
