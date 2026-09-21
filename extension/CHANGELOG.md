@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.5.4] — 2026-09-21 (local development; not a release)
+
+- Gate on netlist availability, not just pin geometry. `pinsAvailable` proves the PIN API read succeeded; it says nothing about whether the netlist that every pin's `net` comes from was fetched. A muted export leaves every pin's `net` null while `pinsAvailable` stays true, so a downstream reader could not tell "this pin has no net" from "no net could be read". `sch block-apply`'s layout proof and `sch designators plan` now require `netlistAvailable` and report the netlist as the cause when it is missing.
+- Surface the same distinction in `sch layout-lint`: parts whose geometry is proven but whose pin-to-net attribution is not are reported as a separate `nets-unproven` category (new `netsUnproven` field, its own strict-gate reason and summary column) instead of being conflated with the legacy-connector `unprovenPins` bucket, which would send the reader to a different fix.
+- Skill: `sch read.floatingPins` may only be recorded as `connectionState:"unconnected"` when `sch read.netlistAvailable` is true — with a muted netlist every pin lands in that list, so it states a failed read rather than an unconnected design.
+
 ## [1.5.3-dev.3] — 2026-09-20 (local development)
 
 - Make `pcb stackup set` read back copper count and every requested inner-layer type. Rejected layer writes now return unverified/partial evidence and a non-zero CLI status instead of a false success; repeated matching requests are no-op verified.
