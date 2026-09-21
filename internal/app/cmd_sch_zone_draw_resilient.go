@@ -165,13 +165,14 @@ func parseZoneFrameSurvey(v map[string]any) zoneFrameSurvey {
 		if id == "" || asFloat(m["rotation"]) != 0 {
 			continue
 		}
-		x, y := asFloat(m["x"]), asFloat(m["y"])
+		x, y := asFloat(m["x"]), schFrameRectTopY(asFloat(m["y"]))
 		w, h := asFloat(m["width"]), asFloat(m["height"])
 		if w <= 0 || h <= 0 {
 			continue
 		}
 		// Same convention as the create call (x, y = MinX, MaxY) and as
-		// schModuleFrames, which reads these very getState_* values back.
+		// schModuleFrames. EasyEDA Pro 3.2.149 mirrors rectangle TopLeftY
+		// on readback, so use the shared normalizer before comparing bboxes.
 		out.RectGeom[id] = layoutBBox{MinX: x, MinY: y - h, MaxX: x + w, MaxY: y}
 	}
 	raw, _ := v["texts"].([]any)

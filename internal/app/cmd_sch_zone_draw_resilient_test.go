@@ -381,6 +381,8 @@ func TestParseZoneFrameSurvey(t *testing.T) {
 		"rectGeom": []any{
 			// create(MinX, MaxY, w, h) ⇒ 读回来是 {x:MinX, y:MaxY, width, height}。
 			map[string]any{"id": "r1", "x": 100.0, "y": 500.0, "width": 300.0, "height": 300.0, "rotation": 0.0},
+			// EasyEDA Pro 3.2.149 会把 TopLeftY 镜像成负数，几何仍应与 r1 相同。
+			map[string]any{"id": "r4", "x": 100.0, "y": -500.0, "width": 300.0, "height": 300.0, "rotation": 0.0},
 			map[string]any{"id": "r2", "x": 0.0, "y": 10.0, "width": 10.0, "height": 10.0, "rotation": 90.0}, // 旋转过 → 不是我们画的形态
 			map[string]any{"id": "r3", "x": 0.0, "y": 10.0, "width": 0.0, "height": 10.0, "rotation": 0.0},   // 退化
 			map[string]any{"id": "", "x": 1.0, "y": 2.0, "width": 3.0, "height": 4.0, "rotation": 0.0},
@@ -398,8 +400,11 @@ func TestParseZoneFrameSurvey(t *testing.T) {
 	if got := s.RectGeom["r1"]; got != (layoutBBox{MinX: 100, MinY: 200, MaxX: 400, MaxY: 500}) {
 		t.Fatalf("r1 geometry = %+v", got)
 	}
-	if len(s.RectGeom) != 1 {
-		t.Fatalf("only r1 is usable geometry, got %+v", s.RectGeom)
+	if got := s.RectGeom["r4"]; got != (layoutBBox{MinX: 100, MinY: 200, MaxX: 400, MaxY: 500}) {
+		t.Fatalf("r4 mirrored-y geometry = %+v", got)
+	}
+	if len(s.RectGeom) != 2 {
+		t.Fatalf("only r1 and r4 are usable geometry, got %+v", s.RectGeom)
 	}
 	if s.Texts[0] != (zoneSurveyText{ID: "t1", Content: "POWER", X: 104, Y: 478}) {
 		t.Fatalf("text = %+v", s.Texts[0])
