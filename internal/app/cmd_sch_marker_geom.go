@@ -431,7 +431,7 @@ func markerOverlapFindings(comps []layoutComp, eps float64) []checkFinding {
 				PrimitiveIds: []string{pa.ID, pb.ID},
 				OverlapX:     round2(ox),
 				OverlapY:     round2(oy),
-				Message: fmt.Sprintf("%s(%s) 与 %s(%s) 视觉重叠 %.2f×%.2f — 换方向/offset 或 stagger",
+				Message: fmt.Sprintf("%s(%s) 与 %s(%s) 视觉重叠 %.2f×%.2f — `sch destagger` 可自动搬(默认只算不动),或换方向/offset",
 					markerLabel(pa), pa.ComponentType, markerLabel(pb), pb.ComponentType, round2(ox), round2(oy)),
 			})
 		}
