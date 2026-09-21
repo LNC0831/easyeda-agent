@@ -74,7 +74,10 @@ func TestRunBlockApplyDryRunPageReadFailureLandsInTheManifest(t *testing.T) {
 	defer cleanup()
 
 	var stdout, stderr bytes.Buffer
-	if err := runBlockApply(cfg, "w1", "led_indicator_gpio", bapInput{},
+	// This test isolates the page-read warning. #241 added an earlier, independent
+	// device-library preflight; skip it here so the daemon's intentional catch-all
+	// read failure reaches the page-read path under test.
+	if err := runBlockApply(cfg, "w1", "led_indicator_gpio", bapInput{SkipDevicePreflight: true},
 		blockApplyPartsFixture(t), true, true, 0, &stdout, &stderr); err != nil {
 		t.Fatalf("dry-run err=%v, want a plan with a caveat", err)
 	}
