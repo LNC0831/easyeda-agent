@@ -11,6 +11,7 @@
  */
 
 import * as extensionConfig from '../extension.json';
+import { ensureHeaderMenusVisible } from './header-menu';
 import {
 	getConnectionStatus,
 	reconnect as transportReconnect,
@@ -30,6 +31,9 @@ const STORAGE_KEY_AUTO_CONNECT = 'autoConnectEnabled';
  */
 // eslint-disable-next-line unused-imports/no-unused-vars
 export function activate(status?: 'onStartupFinished', arg?: string): void {
+	// Declaring headerMenus in extension.json is not enough for a
+	// user-installed extension; see ./header-menu for the host-side trace.
+	void ensureHeaderMenusVisible(extensionConfig);
 	transportStart();
 }
 
