@@ -33,7 +33,7 @@ jobs:
         run: |
           make test
           make mcp-test
-      - name: Validate Skill and release helpers
+      - name: Validate Skill, Agent collaboration and release helpers
         run: |
           make lint-test
           make modules-audit
