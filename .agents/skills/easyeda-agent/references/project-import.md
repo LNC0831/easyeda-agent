@@ -1,6 +1,6 @@
 # 外部工程导入与迁移
 
-本页描述 Altium Designer 工程迁移的当前能力边界。它不是 `easyeda` 的导入命令。
+本页分别描述 Altium Designer 工程迁移的能力边界，以及原生 `.epro2` 工程的打开、导出和恢复。
 
 ## Altium Designer 工程：当前 `unsupported`
 
@@ -69,11 +69,11 @@ MCP 使用 `easyeda_project_transfer`，`operation` 为 `open` 或 `export`，�
 
 工程身份可能先于文档树就绪。需直接进入原理图时，打开命令同时传 `--page-uuid`（MCP `pageUuid`），等待目标页面出现在树中后只打开一次，并核对工程和页面身份。省略此参数只保证工程身份，不保证页面已加载。
 
-## 原生工程恢复：开发接口，待现场验证
+## 原生工程恢复：New Project typed import
 
-`.epro2` 导出与 ZIP 校验不能证明能在新工程恢复。官方 beta `sys_FileManager.importProjectByProjectFile` 提供 EasyEDA Pro/JLCEDA Pro 与 New Project 参数，开发版已实现下述 typed import，尚未完成宿主现场恢复验证。API 存在不等于现场可用；上述本地工作区 AD 探测也不能推出所有宿主模式下的原生导入均不支持。
+`.epro2` 导出与 ZIP 校验不能证明能在新工程恢复。官方 beta `sys_FileManager.importProjectByProjectFile` 提供 EasyEDA Pro/JLCEDA Pro 与 New Project 参数，开发版已实现下述 typed import。2026-09-22 在 Windows、EasyEDA Pro 3.2.149.88089769、ONLINE、匹配 1.5.3-dev.5 CLI/daemon/connector 上，正常及断线原理图包均完成新工程导入、独立回读、保存重载及源工程对照；断线状态保持。覆盖限于单页原理图，不证明 AD 迁移、离线模式、多页层级或 PCB 恢复已验证。上述本地工作区 AD 探测也不能推出所有宿主模式下的原生导入均不支持。
 
-要求可恢复交付时，保留该项 NOT-VERIFIED/incomplete，不以删除验收项获得 PASS。后续实现应仅导入到明确的新目标工程，验证源文件哈希与归档边界、源工程不变、新身份和文档清单，并按位号/真实引脚对照参数、库身份及网络集合。保存重载后再次对照；目标 UUID 非空或导入 Promise resolve 均不能单独证明恢复成功。
+要求可恢复交付时，每次任务均应仅导入到明确的新目标工程，验证源文件哈希与归档边界、源工程不变、新身份和文档清单，并按位号/真实引脚对照参数、库身份及网络集合。保存重载后再次对照；目标 UUID 非空或导入 Promise resolve 均不能单独证明恢复成功。未完成本次对照就保留 NOT-VERIFIED/incomplete，不以历史成功替代本次验收。
 
 接口来源：https://prodocs.lceda.cn/cn/api/reference/pro-api.sys_filemanager.importprojectbyprojectfile.html （beta，参数须按实际宿主核对）。
 
@@ -86,3 +86,5 @@ easyeda project import --window <window> --project-uuid <active-source> --file .
 MCP `easyeda_project_transfer(operation=import, window, projectUuid, file, teamUuid, friendlyName, allowDiscardUnsaved=true)`；不传 base64，不走通用 action 的长命令路径。仅 New Project/ImportDocument，不覆盖原工程或主动提取库。先保存全部文档，确认当前源身份和目标 owner；文件上限 16 MiB、解压总量 128 MiB、最多 2048 条目，检查路径、CRC 和 SHA-256。
 
 成功返回仅表示新工程身份/owner/name 核验，restoreVerified 和 sourceUnchangedVerified 仍为 false，必须独立保存重载及内容对照后才能提升结论。相同源/owner/name/hash 的调用在同一连接器进程内只执行一次，失败也缓存；重启后不保证去重，超时/undefined/部分成功先查新工程，不盲目重试。枚举到同名工程时拒绝导入；这不替代跨进程事务。
+
+独立对照保留原始响应，不改写工具返回的 false。将经验证的恢复结论另写入报告，引用源归档 SHA-256、源/新工程身份、页面清单、导入前后及重载后的对象/网络证据。故障包应保留已知故障，不能把“导入后检查失败”直接等同恢复失败。原生导出可改变文档块排序和 DOCHEAD.client；字节哈希不同先定位差异，若使用规范化比较，必须记录精确排除字段并保留原件，不能宽泛忽略属性变化。
