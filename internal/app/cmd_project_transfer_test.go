@@ -105,3 +105,29 @@ func TestProjectTransferDispatchesTypedActions(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeImportRejectsBeforeDispatch(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "bad.epro2")
+	os.WriteFile(file, []byte("not zip"), 0600)
+	for _, args := range [][]string{
+		{"project", "import", "--window", "w", "--project-uuid", "source", "--file", file, "--team", "t", "--name", "new"},
+		{"project", "import", "--window", "w", "--project-uuid", "source", "--file", file, "--team", "t", "--name", "new", "--allow-discard-unsaved"},
+	} {
+		var out, stderr bytes.Buffer
+		if Run(args, &out, &stderr) == 0 {
+			t.Fatal("accepted invalid import", args)
+		}
+	}
+}
+func TestNativeImportArchiveRejectsTraversal(t *testing.T) {
+	for _, name := range []string{"../project.epru", "/project.epru", "C:/project.epru"} {
+		var buf bytes.Buffer
+		z := zip.NewWriter(&buf)
+		w, _ := z.Create(name)
+		w.Write([]byte("fixture"))
+		z.Close()
+		if validateNativeProjectArchive(buf.Bytes()) == nil {
+			t.Fatal("accepted unsafe archive", name)
+		}
+	}
+}

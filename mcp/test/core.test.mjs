@@ -102,3 +102,10 @@ test('catalogued project transfers enforce window, identity and acknowledgement'
   }
   assert.throws(() => buildActionCallArgs({ name: 'project.open', mutates: true }, { window: 'w', payload: { projectUuid: 'p', allowDiscardUnsaved: 'true' } }));
 });
+
+test('native project import keeps archive bytes out of argv and requires explicit new target', () => {
+ const input={operation:'import',window:'w',projectUuid:'source',file:'C:/restore.epro2',teamUuid:'team',friendlyName:'new',allowDiscardUnsaved:true};
+ const args=buildProjectTransferArgs(input);
+ assert.ok(args.includes('--file'));assert.ok(args.includes('C:/restore.epro2'));assert.ok(!args.includes('--payload'));
+ for(const change of [{allowDiscardUnsaved:false},{teamUuid:''},{friendlyName:''},{file:'x.zip'},{out:'x.epro2'},{pageUuid:'p'}])assert.throws(()=>buildProjectTransferArgs({...input,...change}));
+});

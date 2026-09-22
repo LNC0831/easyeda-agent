@@ -70,6 +70,7 @@ export function filterActions(actions, { domain, search, mutates } = {}) {
 // Project creation targets a connector window, not a document that does not exist yet.
 // Project transfer uses explicit window/UUID guards; other mutations retain document pinning.
 export function buildActionCallArgs(action, input = {}) {
+  if(action.name === 'project.import') throw new Error('Use easyeda_project_transfer operation=import with a local file, not inline archive payload');
   if (action.name === 'project.create') {
     if (typeof input.window !== 'string' || !input.window.trim()) {
       throw new Error('project.create requires an explicit window from easyeda_health');
@@ -178,7 +179,12 @@ export function buildProjectTransferArgs(input = {}) {
   }
   if (input.project || input.doc) throw new Error('Use projectUuid/window, not project/doc routing');
   const args = ['project', input.operation, '--window', input.window, '--project-uuid', input.projectUuid];
-  if (input.operation === 'open') {
+  if (input.operation === 'import') {
+    if(input.allowDiscardUnsaved !== true) throw new Error('Save all documents and acknowledge allowDiscardUnsaved');
+    if(typeof input.file !== 'string' || !input.file.toLowerCase().endsWith('.epro2') || typeof input.teamUuid !== 'string' || !input.teamUuid.trim() || typeof input.friendlyName !== 'string' || !input.friendlyName.trim()) throw new Error('file (.epro2), teamUuid and friendlyName are required');
+    if(input.out || input.pageUuid) throw new Error('out/pageUuid do not apply to import');
+    args.push('--file',input.file,'--team',input.teamUuid,'--name',input.friendlyName,'--allow-discard-unsaved');
+  } else if (input.operation === 'open') {
     if (input.allowDiscardUnsaved !== true) throw new Error('Save all documents first and explicitly acknowledge allowDiscardUnsaved');
     if (input.out) throw new Error('out applies only to export');
     args.push('--allow-discard-unsaved');
@@ -188,6 +194,6 @@ export function buildProjectTransferArgs(input = {}) {
     if (input.pageUuid) throw new Error('pageUuid applies only to open');
     if (input.allowDiscardUnsaved) throw new Error('allowDiscardUnsaved applies only to open');
     args.push('--out', input.out);
-  } else throw new Error('operation must be open or export');
+  } else throw new Error('operation must be open, export or import');
   return args;
 }

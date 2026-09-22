@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.5.3-dev.5] — 2026-09-22 (local development)
+
+- Add bounded native epro2 import into a new explicitly named project via typed connector, CLI and MCP file arguments. Preserve restore verification as a separate readback task.
+- Include documented login diagnostics, duplicate net-attribute investigation and output/cache contracts.
+- Local preparation only; host import and repair roundtrip remain pending.
+
 ## [1.5.3-dev.4] — 2026-09-22 (local development)
 
 - Integrate typed project open/export with native schematic DRC verdict preservation.

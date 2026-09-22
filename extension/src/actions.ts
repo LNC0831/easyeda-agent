@@ -1,3 +1,4 @@
+import { projectImport } from './project-import';
 import { projectOpen, projectExport } from './project-transfer';
 /**
  * Typed-action dispatch. Each action maps to exactly one (occasionally a small
@@ -12734,6 +12735,7 @@ const HANDLERS: Record<string, Handler> = {
 	'project.current': projectCurrent,
 	'project.create': projectCreate,
 	'project.open': projectOpen,
+	'project.import': projectImport,
 	'project.export': projectExport,
 	'document.current': documentCurrent,
 	'document.open': documentOpen,

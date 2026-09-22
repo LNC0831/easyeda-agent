@@ -72,6 +72,12 @@ func AllActions() []ActionSpec {
 			VerifyWith:  []string{"project.current", "document.current"},
 		},
 		{
+			Name: "project.import", Domain: DomainProject, Phase: 1, Mutates: true, NeedsWindow: true, NeedsConfirm: true,
+			Description: "Import bounded native epro2 into a new named project only. Save first; never overwrite a project. Identity verification is not restoration verification; inspect partial failures before retry.",
+			Inputs:      []string{"projectUuid (active source)", "teamUuid", "friendlyName", "base64", "sha256", "allowDiscardUnsaved (required true)"},
+			Outputs:     []string{"uuid", "identityVerified", "restoreVerified=false", "sourceUnchangedVerified=false"},
+		},
+		{
 			Name: "project.export", Domain: DomainProject, Phase: 1, NeedsWindow: true,
 			Description: "Export the active project as native epro2 bytes; checks project identity before and after export, bounds payload to 16 MiB. Save first. CLI validates ZIP/CRC and writes a new file; export does not verify restore.",
 			Inputs:      []string{"projectUuid"},

@@ -89,17 +89,20 @@ function domainTool(domain) {
 const tools = [
   {
     name: 'easyeda_project_transfer',
-    title: 'Open or export a native EasyEDA project',
-    description: 'Project-level operations through fixed official-API adapters. Open can discard unsaved data: save all documents and acknowledge explicitly. Export requires the expected project already active; writes a new epro2 archive with ZIP integrity and hash, never overwrites. No document routing required.',
+    title: 'Open, export or import a native EasyEDA project',
+    description: 'Project-level operations through fixed official-API adapters. Open can discard unsaved data: save all documents and acknowledge explicitly. Export requires the expected project already active; writes a new epro2 archive with ZIP integrity and hash, never overwrites. Import uses a local epro2 file and creates a new named project only; projectUuid is the active source. Identity verification does not verify recovery. No document routing required.',
     inputSchema: {
       type: 'object',
       properties: {
-        operation: { type: 'string', enum: ['open', 'export'] },
+        operation: { type: 'string', enum: ['open', 'export', 'import'] },
         window: { type: 'string', minLength: 1 },
         projectUuid: { type: 'string', minLength: 1 },
         pageUuid: { type: 'string', minLength: 1, description: 'For open only: wait for and open this schematic page, then verify both identities.' },
-        allowDiscardUnsaved: { type: 'boolean', description: 'For open only: explicit acknowledgement after saving all documents.' },
+        allowDiscardUnsaved: { type: 'boolean', description: 'For open/import: explicit acknowledgement after saving all documents.' },
         out: { type: 'string', description: 'For export only: new local .epro2 path, never overwritten.' },
+        file: {type:'string',description:'For import: native local .epro2 input; never inline base64'},
+        teamUuid:{type:'string',description:'For import: explicit target owner'},
+        friendlyName:{type:'string',description:'For import: unique NEW project name; projectUuid identifies active source'},
       },
       required: ['operation', 'window', 'projectUuid'],
       additionalProperties: false,

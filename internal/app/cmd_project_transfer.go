@@ -60,34 +60,8 @@ func writeProjectArchive(value map[string]any, out string) (map[string]any, erro
 	if !ok || size != float64(len(data)) || len(data) == 0 || len(data) > projectArchiveLimit || value["format"] != "epro2" {
 		return nil, fmt.Errorf("invalid project archive size/format")
 	}
-	// Validate the native ZIP container and CRCs before delivering a file. Do not
-	// extract user-controlled paths. Bound expanded data to avoid archive bombs.
-	z, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return nil, fmt.Errorf("invalid native project ZIP: %w", err)
-	}
-	var expanded uint64
-	native := false
-	for _, f := range z.File {
-		if f.UncompressedSize64 > 128*1024*1024-expanded {
-			return nil, fmt.Errorf("project archive expanded size exceeds 128 MiB")
-		}
-		expanded += f.UncompressedSize64
-		if strings.HasSuffix(strings.ToLower(f.Name), ".epru") {
-			native = true
-		}
-		r, e := f.Open()
-		if e != nil {
-			return nil, e
-		}
-		_, e = io.Copy(io.Discard, io.LimitReader(r, int64(f.UncompressedSize64)+1))
-		r.Close()
-		if e != nil {
-			return nil, fmt.Errorf("project ZIP integrity: %w", e)
-		}
-	}
-	if !native {
-		return nil, fmt.Errorf("native epro2 archive contains no epru project data")
+	if err = validateNativeProjectArchive(data); err != nil {
+		return nil, err
 	}
 	if err = os.MkdirAll(filepath.Dir(out), 0755); err != nil {
 		return nil, err
@@ -135,4 +109,46 @@ func newProjectExportCmd(cfg *appConfig, window *string, stdout io.Writer) *cobr
 	c.Flags().StringVar(&uuid, "project-uuid", "", "expected active project UUID (required)")
 	c.Flags().StringVar(&out, "out", "", "new .epro2 output path (required); save documents before exporting")
 	return c
+}
+
+func validateNativeProjectArchive(data []byte) error {
+	if len(data) == 0 || len(data) > projectArchiveLimit {
+		return fmt.Errorf("invalid native archive size")
+	}
+	// Validate the native ZIP container and CRCs before delivering a file. Do not
+	// extract user-controlled paths. Bound expanded data to avoid archive bombs.
+	z, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return fmt.Errorf("invalid native project ZIP: %w", err)
+	}
+	if len(z.File) > 2048 {
+		return fmt.Errorf("too many archive entries")
+	}
+	var expanded uint64
+	native := false
+	for _, f := range z.File {
+		if strings.Contains(f.Name, "\\") || strings.Contains(f.Name, ":") || strings.HasPrefix(f.Name, "/") || strings.Contains("/"+f.Name+"/", "/../") {
+			return fmt.Errorf("unsafe archive path")
+		}
+		if f.UncompressedSize64 > 128*1024*1024-expanded {
+			return fmt.Errorf("project archive expanded size exceeds 128 MiB")
+		}
+		expanded += f.UncompressedSize64
+		if strings.HasSuffix(strings.ToLower(f.Name), ".epru") {
+			native = true
+		}
+		r, e := f.Open()
+		if e != nil {
+			return e
+		}
+		_, e = io.Copy(io.Discard, io.LimitReader(r, int64(f.UncompressedSize64)+1))
+		r.Close()
+		if e != nil {
+			return fmt.Errorf("project ZIP integrity: %w", e)
+		}
+	}
+	if !native {
+		return fmt.Errorf("native epro2 archive contains no epru project data")
+	}
+	return nil
 }
