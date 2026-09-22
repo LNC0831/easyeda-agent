@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.5.3-dev.4] — 2026-09-22 (local development)
+
+- Integrate typed project open/export with native schematic DRC verdict preservation.
+- Preserve the SDK boolean verdict for strict/non-strict checks; mark unavailable counts and details explicitly.
+- Local integration build only; no release tag or upstream release is published. Live verification is pending.
+
 ## [Unreleased]
 
 - Bootstrap the Connector when EasyEDA evaluates its entry bundle without dispatching `activate()`. Keep one versioned transport controller on the host's shared per-extension `eda` object so repeated bundle evaluations delegate `start`, `stop`, `reconnect`, and status reads instead of registering duplicate sockets. `deactivate()` stops and releases that controller for a subsequent reload. Verified on macOS EasyEDA 3.2.203 with an official 1.5.2 cold-start baseline that did not connect, followed by import-time and fresh-process bootstrap registrations where `activateObserved=false`; this does not establish the behavior of Windows 3.2.149 or a startup path that never evaluates the bundle.
