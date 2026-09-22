@@ -231,3 +231,7 @@ CLI `project open --project-uuid` 与 `project export` 封装上述 action；导
 
 `schematic.drc.check` 的 `passed` / `nativePassed` 采用宿主布尔重载在指定 `strict` 下的判定。详细模式另取统计，两次 SDK 读取不是原子快照；检查期间不要并发修改工程。非严格通过并不代表零告警。
 `countsAvailable` / `detailsAvailable` 区分统计和逐项明细；仅布尔结果的 `summary` / `fatal` 为 null，不能把未知填成零。聚合 count/type 不能用来猜规则或对象，`schematic.check` 不替代原生规则。调用失败不能作为通过。
+
+DRC typed payload 使用 `strict` 与 `includeVerboseError`，例如 `{ "strict": false, "includeVerboseError": false }`。不要把 CLI 的 `--verbose` 展示选项写成 payload.verbose；未知字段可能被忽略，造成测试实际重复默认分支。验证参数覆盖时同时检查返回的 countsAvailable、summary 和 strict。
+
+宿主 3.2.149 的详细 DRC 返回仍可能只有 type/count。需要解释告警时，保留原生响应并获取原生面板规则/对象文字作为人工证据；自建 sch check 的 findings 只能作为独立线索，未经对应关系验证不能认定是同一条原生告警。

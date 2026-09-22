@@ -68,3 +68,11 @@ MCP 使用 `easyeda_project_transfer`，`operation` 为 `open` 或 `export`，�
 此工具需要含上述 CLI 命令的匹配构建；不要仅替换 MCP 而仍使用旧 CLI。
 
 工程身份可能先于文档树就绪。需直接进入原理图时，打开命令同时传 `--page-uuid`（MCP `pageUuid`），等待目标页面出现在树中后只打开一次，并核对工程和页面身份。省略此参数只保证工程身份，不保证页面已加载。
+
+## 原生工程恢复：尚未提供 typed import
+
+`.epro2` 导出与 ZIP 校验不能证明能在新工程恢复。官方 beta `sys_FileManager.importProjectByProjectFile` 提供 EasyEDA Pro/JLCEDA Pro 与 New Project 参数，但本工具当前没有对应的已验证 typed import action/CLI。API 存在不等于现场可用；上述本地工作区 AD 探测也不能推出所有宿主模式下的原生导入均不支持。
+
+要求可恢复交付时，保留该项 NOT-VERIFIED/incomplete，不以删除验收项获得 PASS。后续实现应仅导入到明确的新目标工程，验证源文件哈希与归档边界、源工程不变、新身份和文档清单，并按位号/真实引脚对照参数、库身份及网络集合。保存重载后再次对照；目标 UUID 非空或导入 Promise resolve 均不能单独证明恢复成功。
+
+接口来源：https://prodocs.lceda.cn/cn/api/reference/pro-api.sys_filemanager.importprojectbyprojectfile.html （beta，参数须按实际宿主核对）。
